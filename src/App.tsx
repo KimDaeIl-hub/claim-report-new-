@@ -17,6 +17,7 @@ import {
   SlidersHorizontal,
   Plus,
   Layers,
+  Save,
 } from "lucide-react";
 import { ReportData, ClaimPreset } from "./types";
 import { INITIAL_REPORT_DATA } from "./data/presets";
@@ -414,6 +415,25 @@ export default function App() {
               {lastSavedAt ? `자동 저장됨 (${lastSavedAt})` : "10초마다 자동 임시 저장"}
             </span>
           </div>
+
+          {/* Direct Manual Save Button */}
+          <button
+            type="button"
+            onClick={() => {
+              saveReportToDb(report);
+              const now = new Date();
+              const timeStr = `${String(now.getHours()).padStart(2, "0")}:${String(
+                now.getMinutes()
+              ).padStart(2, "0")}:${String(now.getSeconds()).padStart(2, "0")}`;
+              setLastSavedAt(timeStr);
+              showToast("현재 클레임 데이터(조사결과 버튼 선택값 포함)가 저장되었습니다.");
+            }}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-500 rounded-lg shadow-xs transition-all active:scale-95 border border-emerald-500 cursor-pointer"
+            title="현재 작성 중인 데이터 즉시 수동 저장 (새로고침 시에도 유지됨)"
+          >
+            <Save className="w-3.5 h-3.5" />
+            <span>저장</span>
+          </button>
 
           {/* Drawer: Saved reports */}
           <button

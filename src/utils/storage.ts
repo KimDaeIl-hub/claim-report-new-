@@ -131,10 +131,34 @@ export function mergePresetData(currentReport: ReportData, presetData: Partial<R
       qualityTestRecord: presetData.lotHistory?.qualityTestRecord ?? currentReport.lotHistory?.qualityTestRecord ?? "",
       priorClaimsCount: presetData.lotHistory?.priorClaimsCount ?? currentReport.lotHistory?.priorClaimsCount ?? "",
       retainedSampleCheck: presetData.lotHistory?.retainedSampleCheck ?? currentReport.lotHistory?.retainedSampleCheck ?? "",
+      rawMaterialCheck: presetData.lotHistory?.rawMaterialCheck ?? currentReport.lotHistory?.rawMaterialCheck ?? "",
+      rawMaterialStatus: presetData.lotHistory?.rawMaterialStatus ?? currentReport.lotHistory?.rawMaterialStatus,
+      manufacturingRecordResult: presetData.lotHistory?.manufacturingRecordResult ?? currentReport.lotHistory?.manufacturingRecordResult,
+      storageSampleResult: presetData.lotHistory?.storageSampleResult ?? currentReport.lotHistory?.storageSampleResult,
+      qualityInspectionResult: presetData.lotHistory?.qualityInspectionResult ?? currentReport.lotHistory?.qualityInspectionResult,
+      materialInvestigationResult: presetData.lotHistory?.materialInvestigationResult ?? currentReport.lotHistory?.materialInvestigationResult,
       // Keep lot photos!
       retainedSamplePhotos: existingLotPhotos.length > 0
         ? existingLotPhotos
         : ((presetData.lotHistory?.retainedSamplePhotos || []).filter(isUserPhoto)),
+    },
+    manufacturingProcess: {
+      ...currentReport.manufacturingProcess,
+      ...presetData.manufacturingProcess,
+      processInvestigationResult: presetData.manufacturingProcess?.processInvestigationResult ?? currentReport.manufacturingProcess?.processInvestigationResult,
+    },
+    investigationResults: {
+      ...(currentReport.investigationResults || {}),
+      ...(presetData.investigationResults || {}),
+    },
+    manufacturingRecordResult: presetData.manufacturingRecordResult ?? currentReport.manufacturingRecordResult,
+    storageSampleResult: presetData.storageSampleResult ?? currentReport.storageSampleResult,
+    qualityInspectionResult: presetData.qualityInspectionResult ?? currentReport.qualityInspectionResult,
+    processInvestigationResult: presetData.processInvestigationResult ?? currentReport.processInvestigationResult,
+    materialInvestigationResult: presetData.materialInvestigationResult ?? currentReport.materialInvestigationResult,
+    investigationSelections: {
+      ...(currentReport.investigationSelections || {}),
+      ...(presetData.investigationSelections || {}),
     },
     attachments: {
       attachment1Photos: existingAtt1.length > 0

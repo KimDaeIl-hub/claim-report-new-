@@ -119,6 +119,9 @@ export const INITIAL_REPORT_DATA: ReportData = {
     criticalControlPoint:
       "충전 후 FBI(Full Bottle Inspector) 검사기를 통해 병 바닥 이물 및 파손 여부를 광학 카메라로 100% 전수 검사하여 이상 제품 출하를 원천 차단하고 있음.",
     highlightedStep: "FBI 바닥이물 검사 및 인카토너 중량선별 공정",
+    processInvestigationResult: "no_issue",
+    processInvestigationNote:
+      "제조공정 및 관련 기록을 확인한 결과, 제조과정에서 특이사항은 확인되지 않았습니다.",
   },
 
   lotHistory: {
@@ -130,7 +133,34 @@ export const INITIAL_REPORT_DATA: ReportData = {
     priorClaimsCount: "동일 Lot(생산량 120,000병) 내 유사 유리 파손 관련 이전 클레임 접수 이력 없음 (0건).",
     retainedSampleCheck:
       "당사 공장 보관품(동일 Lot 50병) 무작위 전수 정밀 검사 결과, 타격점 및 유리 파손이나 이물 혼입 0건으로 정상 상태 유지 확인.",
+    rawMaterialCheck:
+      "원부자재(공병/캡/원료) 입고 성적서 검토 결과 규격 적합 및 이상 없음 확인.",
     retainedSamplePhotos: [],
+    manufacturingRecordResult: "no_issue",
+    storageSampleResult: "normal",
+    qualityInspectionResult: "pass",
+    materialInvestigationResult: "no_issue",
+  },
+
+  investigationResults: {
+    manufacturingRecordResult: "no_issue",
+    storageSampleResult: "normal",
+    qualityInspectionResult: "pass",
+    processInvestigationResult: "no_issue",
+    materialInvestigationResult: "no_issue",
+  },
+  manufacturingRecordResult: "no_issue",
+  storageSampleResult: "normal",
+  qualityInspectionResult: "pass",
+  processInvestigationResult: "no_issue",
+  materialInvestigationResult: "no_issue",
+
+  investigationSelections: {
+    manufacturingRecord: "no_issue",
+    retainedSample: "normal",
+    qualityInspection: "pass",
+    manufacturingProcess: "no_issue",
+    rawMaterial: "no_issue",
   },
 
   rootCauseAndActions: {

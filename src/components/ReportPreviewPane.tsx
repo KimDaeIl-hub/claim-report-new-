@@ -1172,6 +1172,12 @@ export function ReportPreviewPane({
                         <span>{report.manufacturingProcess.criticalControlPoint}</span>
                       </div>
                     )}
+                    {report.manufacturingProcess.processInvestigationNote && (
+                      <div className="p-2.5 bg-blue-50/70 border-l-4 border-blue-500 rounded-r text-blue-950 font-medium">
+                        <strong className="block font-bold mb-0.5">라. 제조공정 조사 결과:</strong>
+                        <span>{report.manufacturingProcess.processInvestigationNote}</span>
+                      </div>
+                    )}
                   </div>
                 </section>
               )}
@@ -1300,6 +1306,29 @@ export function ReportPreviewPane({
                             )}
                           </td>
                         </tr>
+                        {(report.lotHistory.rawMaterialCheck ||
+                          report.lotHistory.materialInvestigationResult) && (
+                          <tr>
+                            <th className="bg-slate-100 p-2 text-left font-semibold text-slate-700 border-r border-slate-200 align-top">
+                              원부자재 및 LOT 추적 조사
+                            </th>
+                            <td className="p-2 text-slate-900 leading-relaxed font-medium">
+                              {report.lotHistory.rawMaterialStatus && (
+                                <span
+                                  className={`inline-block text-[10px] px-2 py-0.5 rounded border font-bold mr-2 mb-1 ${getInvestigationStatusBadgeStyle(
+                                    report.lotHistory.rawMaterialStatus
+                                  )}`}
+                                >
+                                  {report.lotHistory.rawMaterialStatus}
+                                </span>
+                              )}
+                              <span>
+                                {report.lotHistory.rawMaterialCheck ||
+                                  "관련 원부자재의 제조 및 입고 기록을 확인한 결과, 특이사항은 확인되지 않았습니다."}
+                              </span>
+                            </td>
+                          </tr>
+                        )}
                       </tbody>
                     </table>
                   </div>

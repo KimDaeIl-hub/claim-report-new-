@@ -32,7 +32,7 @@ import {
   Workflow,
   RotateCcw,
 } from "lucide-react";
-import { ReportData, PhysicochemicalItem, AdditionalTestItem, ClaimPreset, InvestigationStatus } from "../types";
+import { ReportData, PhysicochemicalItem, AdditionalTestItem, ClaimPreset, InvestigationStatus, InvestigationItemSelection, InvestigationResultsData } from "../types";
 import { getAllPresets } from "../data/presets";
 import { parseMhtFile, ParsedMhtClaimData } from "../utils/mhtParser";
 import { mergePresetData, isUserPhoto } from "../utils/storage";
@@ -43,6 +43,16 @@ import { TestPrincipleBox } from "./TestPrincipleBox";
 import { CompanyLogoUploader } from "./CompanyLogoUploader";
 import { PresetSelectorBar } from "./PresetSelectorBar";
 import { InvestigationStatusSelector } from "./InvestigationStatusSelector";
+import { InvestigationButtonGroup } from "./InvestigationButtonGroup";
+import { GeneratedSentenceCard } from "./GeneratedSentenceCard";
+import { InvestigationDetailInputsCard } from "./InvestigationDetailInputsCard";
+import { INVESTIGATION_CHOICES, getChoiceOptionCode, getChoiceOptionLabel, InvestigationChoiceKey } from "../data/investigationChoices";
+import {
+  getInvestigationSentenceTemplate,
+  assembleInvestigationSentence,
+  InvestigationItemKey,
+} from "../data/investigationTemplates";
+import { InvestigationDetailInputs } from "../types";
 import { getUnexaminedInvestigationItems } from "../utils/investigationStatus";
 import { validateReport } from "../utils/reportValidator";
 import { ShieldCheck, ShieldAlert } from "lucide-react";
@@ -282,6 +292,209 @@ export function InputFormPane({
       lotHistory: newLotHistory,
       attachments: newAttachments,
     });
+  };
+
+  // 5대 조사결과 항목의 현재 고유값(코드)을 안전하게 조회하는 헬퍼
+  const getInvestigationValue = (
+    key: "manufacturingRecord" | "retainedSample" | "qualityInspection" | "manufacturingProcess" | "rawMaterial"
+  ): string => {
+    if (key === "manufacturingRecord") {
+      const val =
+        report.investigationResults?.manufacturingRecordResult ||
+        report.manufacturingRecordResult ||
+        report.lotHistory?.manufacturingRecordResult ||
+        (report.investigationSelections?.manufacturingRecord as string) ||
+        "";
+      return getChoiceOptionCode("manufacturingRecord", val);
+    }
+    if (key === "retainedSample") {
+      const val =
+        report.investigationResults?.storageSampleResult ||
+        report.storageSampleResult ||
+        report.lotHistory?.storageSampleResult ||
+        (report.investigationSelections?.retainedSample as string) ||
+        "";
+      return getChoiceOptionCode("retainedSample", val);
+    }
+    if (key === "qualityInspection") {
+      const val =
+        report.investigationResults?.qualityInspectionResult ||
+        report.qualityInspectionResult ||
+        report.lotHistory?.qualityInspectionResult ||
+        (report.investigationSelections?.qualityInspection as string) ||
+        "";
+      return getChoiceOptionCode("qualityInspection", val);
+    }
+    if (key === "manufacturingProcess") {
+      const val =
+        report.investigationResults?.processInvestigationResult ||
+        report.processInvestigationResult ||
+        report.manufacturingProcess?.processInvestigationResult ||
+        (report.investigationSelections?.manufacturingProcess as string) ||
+        "";
+      return getChoiceOptionCode("manufacturingProcess", val);
+    }
+    if (key === "rawMaterial") {
+      const val =
+        report.investigationResults?.materialInvestigationResult ||
+        report.materialInvestigationResult ||
+        report.lotHistory?.materialInvestigationResult ||
+        (report.investigationSelections?.rawMaterial as string) ||
+        "";
+      return getChoiceOptionCode("rawMaterial", val);
+    }
+    return "";
+  };
+
+  // 5대 조사결과 버튼 선택 시 고유 코드로 안전하게 저장하는 헬퍼
+  const updateInvestigationSelection = (
+    key: "manufacturingRecord" | "retainedSample" | "qualityInspection" | "manufacturingProcess" | "rawMaterial",
+    codeOrVal: string | string[]
+  ) => {
+    const rawVal = Array.isArray(codeOrVal) ? codeOrVal[0] || "" : codeOrVal || "";
+    const code = getChoiceOptionCode(key, rawVal);
+
+    const fieldMapping: Record<string, keyof InvestigationResultsData> = {
+      manufacturingRecord: "manufacturingRecordResult",
+      retainedSample: "storageSampleResult",
+      qualityInspection: "qualityInspectionResult",
+      manufacturingProcess: "processInvestigationResult",
+      rawMaterial: "materialInvestigationResult",
+    };
+
+    const targetResultField = fieldMapping[key];
+
+    const nextResults: InvestigationResultsData = {
+      ...(report.investigationResults || {}),
+      ...(targetResultField ? { [targetResultField]: code } : {}),
+    };
+
+    const nextSelections: InvestigationItemSelection = {
+      ...(report.investigationSelections || {}),
+      [key]: code,
+    };
+
+    // 현재 저장된 해당 항목의 추가 입력값과 함께 문장 조립
+    const itemDetails = (report.investigationDetails?.[key] as Record<string, string | undefined>) || {};
+    const assembleResult = code
+      ? assembleInvestigationSentence(key, code, itemDetails)
+      : { sentence: "", isComplete: false, isExtraInputRequired: false, missingFields: [] };
+
+    // 추가 입력이 필요한데 아직 입력이 비어있는 경우엔 기존 텍스트를 지우지 않음
+    const shouldUpdateSentence = assembleResult.isComplete && Boolean(assembleResult.sentence);
+    const templateSentence = assembleResult.sentence;
+
+    const nextLotHistory = {
+      ...report.lotHistory,
+      ...(key === "manufacturingRecord"
+        ? {
+            manufacturingRecordResult: code,
+            ...(shouldUpdateSentence ? { productionLogNote: templateSentence } : {}),
+          }
+        : {}),
+      ...(key === "retainedSample"
+        ? {
+            storageSampleResult: code,
+            ...(shouldUpdateSentence ? { retainedSampleCheck: templateSentence } : {}),
+          }
+        : {}),
+      ...(key === "qualityInspection"
+        ? {
+            qualityInspectionResult: code,
+            ...(shouldUpdateSentence ? { qualityTestRecord: templateSentence } : {}),
+          }
+        : {}),
+      ...(key === "rawMaterial"
+        ? {
+            materialInvestigationResult: code,
+            ...(shouldUpdateSentence ? { rawMaterialCheck: templateSentence } : {}),
+          }
+        : {}),
+    };
+
+    const nextManufacturingProcess = {
+      ...report.manufacturingProcess,
+      ...(key === "manufacturingProcess"
+        ? {
+            processInvestigationResult: code,
+            ...(shouldUpdateSentence ? { processInvestigationNote: templateSentence } : {}),
+          }
+        : {}),
+    };
+
+    const updated: ReportData = {
+      ...report,
+      investigationResults: nextResults,
+      investigationSelections: nextSelections,
+      lotHistory: nextLotHistory,
+      manufacturingProcess: nextManufacturingProcess,
+      ...(key === "manufacturingRecord" ? { manufacturingRecordResult: code } : {}),
+      ...(key === "retainedSample" ? { storageSampleResult: code } : {}),
+      ...(key === "qualityInspection" ? { qualityInspectionResult: code } : {}),
+      ...(key === "manufacturingProcess" ? { processInvestigationResult: code } : {}),
+      ...(key === "rawMaterial" ? { materialInvestigationResult: code } : {}),
+    };
+
+    onChange(updated);
+  };
+
+  // 5대 조사결과 추가 입력 필드 변경 핸들러
+  const updateInvestigationDetailField = (
+    key: InvestigationItemKey,
+    fieldKey: string,
+    fieldValue: string
+  ) => {
+    const currentItemDetails = (report.investigationDetails?.[key] as Record<string, string | undefined>) || {};
+    const updatedItemDetails = {
+      ...currentItemDetails,
+      [fieldKey]: fieldValue,
+    };
+
+    const nextDetails: InvestigationDetailInputs = {
+      ...(report.investigationDetails || {}),
+      [key]: updatedItemDetails,
+    };
+
+    const currentCode = getInvestigationValue(key);
+    const assembleResult = assembleInvestigationSentence(key, currentCode, updatedItemDetails);
+
+    let nextLotHistory = { ...report.lotHistory };
+    let nextManufacturingProcess = { ...report.manufacturingProcess };
+
+    // 조립이 성공적으로 완성된 경우 해당 섹션의 작성 내용도 실시간 반영
+    if (assembleResult.isComplete && assembleResult.sentence) {
+      if (key === "manufacturingRecord") {
+        nextLotHistory.productionLogNote = assembleResult.sentence;
+      } else if (key === "retainedSample") {
+        nextLotHistory.retainedSampleCheck = assembleResult.sentence;
+      } else if (key === "qualityInspection") {
+        nextLotHistory.qualityTestRecord = assembleResult.sentence;
+      } else if (key === "rawMaterial") {
+        nextLotHistory.rawMaterialCheck = assembleResult.sentence;
+      } else if (key === "manufacturingProcess") {
+        nextManufacturingProcess.processInvestigationNote = assembleResult.sentence;
+        if (
+          !nextManufacturingProcess.criticalControlPoint ||
+          nextManufacturingProcess.criticalControlPoint.trim() === ""
+        ) {
+          nextManufacturingProcess.criticalControlPoint = assembleResult.sentence;
+        }
+      }
+    }
+
+    onChange({
+      ...report,
+      investigationDetails: nextDetails,
+      lotHistory: nextLotHistory,
+      manufacturingProcess: nextManufacturingProcess,
+    });
+  };
+
+  // 현재 선택값 및 추가 입력 내용을 종합하여 조사문장 조립 결과를 반환하는 헬퍼
+  const getAssembledSentenceResult = (key: InvestigationItemKey) => {
+    const currentCode = getInvestigationValue(key);
+    const details = report.investigationDetails?.[key] as Record<string, string | undefined> | undefined;
+    return assembleInvestigationSentence(key, currentCode, details);
   };
 
   const updateRootCause = (patch: Partial<ReportData["rootCauseAndActions"]>) => {
@@ -3059,6 +3272,124 @@ export function InputFormPane({
             </div>
             </div>
 
+            {/* 5대 핵심 조사결과 버튼 선택 현황 요약 바 */}
+            <div className="bg-gradient-to-r from-blue-50/90 via-slate-50 to-indigo-50/70 border border-blue-200/90 rounded-2xl p-4 shadow-2xs space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2 pb-2.5 border-b border-blue-200/70">
+                <div className="flex items-center gap-2">
+                  <div className="w-7 h-7 rounded-lg bg-blue-600 text-white flex items-center justify-center font-bold text-xs shadow-2xs">
+                    5
+                  </div>
+                  <div>
+                    <h4 className="text-xs sm:text-sm font-bold text-slate-900 flex items-center gap-1.5">
+                      <span>5대 핵심 조사결과 선택 현황</span>
+                      <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-blue-100 text-blue-700">
+                        단일 선택 UI
+                      </span>
+                    </h4>
+                    <p className="text-[11px] text-slate-500">
+                      제조기록 · 보관품 · 품질검사 · 제조공정 · 원부자재 조사 항목의 결과를 버튼으로 간편하게 선택합니다.
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-[11px] font-bold text-blue-900 bg-white px-2.5 py-1 rounded-lg border border-blue-200 shadow-2xs">
+                    선택 완료:{" "}
+                    <strong className="text-blue-700 font-extrabold">
+                      {[
+                        getInvestigationValue("manufacturingRecord"),
+                        getInvestigationValue("retainedSample"),
+                        getInvestigationValue("qualityInspection"),
+                        getInvestigationValue("manufacturingProcess"),
+                        getInvestigationValue("rawMaterial"),
+                      ].filter(Boolean).length}
+                    </strong>{" "}
+                    / 5개 항목
+                  </span>
+                </div>
+              </div>
+
+              {/* 5대 항목 바로가기 및 선택 요약 그리드 */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-2">
+                {[
+                  {
+                    num: 1,
+                    key: "manufacturingRecord" as const,
+                    title: "1. 제조기록",
+                    targetId: "field-choice-manufacturing-record",
+                  },
+                  {
+                    num: 2,
+                    key: "retainedSample" as const,
+                    title: "2. 보관품",
+                    targetId: "field-choice-retained-sample",
+                  },
+                  {
+                    num: 3,
+                    key: "qualityInspection" as const,
+                    title: "3. 품질검사",
+                    targetId: "field-choice-quality-inspection",
+                  },
+                  {
+                    num: 4,
+                    key: "manufacturingProcess" as const,
+                    title: "4. 제조공정",
+                    targetId: "field-choice-manufacturing-process",
+                  },
+                  {
+                    num: 5,
+                    key: "rawMaterial" as const,
+                    title: "5. 원부자재",
+                    targetId: "field-choice-raw-material",
+                  },
+                ].map((item) => {
+                  const codeVal = getInvestigationValue(item.key);
+                  const isDone = Boolean(codeVal);
+                  const displayLabel = getChoiceOptionLabel(item.key, codeVal);
+                  return (
+                    <button
+                      key={item.num}
+                      type="button"
+                      onClick={() => {
+                        const el = document.getElementById(item.targetId);
+                        if (el) {
+                          el.scrollIntoView({ behavior: "smooth", block: "center" });
+                          el.classList.add("ring-2", "ring-blue-400", "ring-offset-2", "transition-all");
+                          setTimeout(() => el.classList.remove("ring-2", "ring-blue-400", "ring-offset-2"), 1500);
+                        }
+                      }}
+                      className={`text-left p-2 rounded-xl border transition-all hover:scale-[1.01] active:scale-95 cursor-pointer ${
+                        isDone
+                          ? "bg-white border-blue-300 shadow-2xs"
+                          : "bg-white/60 border-slate-200 hover:border-slate-300"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between text-[11px] font-bold text-slate-800 mb-1">
+                        <span>{item.title}</span>
+                        <span
+                          className={`text-[9.5px] px-1.5 py-0.2 rounded font-semibold ${
+                            isDone
+                              ? "bg-emerald-100 text-emerald-800 border border-emerald-200"
+                              : "bg-slate-100 text-slate-400"
+                          }`}
+                        >
+                          {isDone ? "선택됨" : "미선택"}
+                        </span>
+                      </div>
+                      <div className="text-[11px] font-semibold truncate text-slate-600">
+                        {isDone ? (
+                          <span className="text-blue-700 font-bold" title={displayLabel}>
+                            {displayLabel}
+                          </span>
+                        ) : (
+                          <span className="text-slate-400 font-normal">결과 선택 이동 →</span>
+                        )}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
             {/* 서브 섹션 B. 제조공정 분석 및 관리 포인트 */}
             <div
               className={`rounded-2xl transition-all ${
@@ -3163,6 +3494,75 @@ export function InputFormPane({
                       <Workflow className="w-3.5 h-3.5" />
                       <span>제조공정도 템플릿 관리 / 선택</span>
                     </button>
+                  </div>
+                </div>
+
+                {/* 4. 제조공정 조사 버튼 선택 UI */}
+                <div id="field-choice-manufacturing-process">
+                  <InvestigationButtonGroup
+                    itemNumber={4}
+                    label="4. 제조공정 조사"
+                    description={INVESTIGATION_CHOICES.manufacturingProcess.subtitle}
+                    options={INVESTIGATION_CHOICES.manufacturingProcess.options}
+                    value={getInvestigationValue("manufacturingProcess")}
+                    onChange={(val) => updateInvestigationSelection("manufacturingProcess", val)}
+                  />
+
+                  {/* 추가 설명이 필요한 선택지 선택 시 동적 입력창 표시 */}
+                  <InvestigationDetailInputsCard
+                    itemKey="manufacturingProcess"
+                    optionCodeOrLabel={getInvestigationValue("manufacturingProcess")}
+                    values={report.investigationDetails?.manufacturingProcess}
+                    onChange={(fieldKey, val) =>
+                      updateInvestigationDetailField("manufacturingProcess", fieldKey, val)
+                    }
+                  />
+
+                  {/* 자동 생성 문장 카드 */}
+                  {(() => {
+                    const result = getAssembledSentenceResult("manufacturingProcess");
+                    return (
+                      <GeneratedSentenceCard
+                        sentence={result.sentence}
+                        currentValue={
+                          report.manufacturingProcess.processInvestigationNote ??
+                          report.manufacturingProcess.criticalControlPoint ??
+                          ""
+                        }
+                        isExtraInputRequired={result.isExtraInputRequired}
+                        isMissingInput={!result.isComplete}
+                        missingFields={result.missingFields}
+                        onResetToDefault={(sentence) =>
+                          updateManufacturingProcess({
+                            processInvestigationNote: sentence,
+                          })
+                        }
+                      />
+                    );
+                  })()}
+
+                  <div className="mt-2 mb-3">
+                    <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                      제조공정 조사 내용 (자유 수정 가능)
+                    </label>
+                    <textarea
+                      id="field-process-investigation-note"
+                      rows={2}
+                      value={
+                        report.manufacturingProcess.processInvestigationNote ??
+                        getInvestigationSentenceTemplate(
+                          "manufacturingProcess",
+                          getInvestigationValue("manufacturingProcess")
+                        )
+                      }
+                      onChange={(e) =>
+                        updateManufacturingProcess({
+                          processInvestigationNote: e.target.value,
+                        })
+                      }
+                      placeholder="제조공정 및 관련 기록을 확인한 결과, 제조과정에서 특이사항은 확인되지 않았습니다."
+                      className="w-full text-xs p-2.5 border border-slate-300 rounded-md focus:ring-1 focus:ring-blue-500 focus:outline-none leading-relaxed font-medium"
+                    />
                   </div>
                 </div>
 
@@ -3357,10 +3757,11 @@ export function InputFormPane({
 
             {!report.lotHistory.skipped ? (
               <div className="space-y-4">
-                <div>
+                {/* 1. 제조기록 조사 */}
+                <div id="field-choice-manufacturing-record">
                   <div className="flex items-center justify-between mb-1">
                     <label className="text-xs font-semibold text-slate-700">
-                      제조 당시 생산일지 특이사항 유무 (설비 트러블 등)
+                      1. 제조기록 조사 (생산일지 특이사항 유무)
                     </label>
                     <div className="flex items-center gap-2">
                       <PhraseDropdown
@@ -3386,20 +3787,63 @@ export function InputFormPane({
                       itemLabel="제조 당시 생산일지 점검"
                     />
                   </div>
-                  <textarea
-                    id="field-lot-production-log"
-                    rows={2}
-                    value={report.lotHistory.productionLogNote}
-                    onChange={(e) => updateLotHistory({ productionLogNote: e.target.value })}
-                    placeholder="생산 당일 제조일지 점검 결과 설비 이상 및 오가동 내역 없음..."
-                    className="w-full text-xs p-2.5 border border-slate-300 rounded-md focus:ring-1 focus:ring-blue-500 focus:outline-none"
+                  <InvestigationButtonGroup
+                    itemNumber={1}
+                    label="1. 제조기록 조사"
+                    description={INVESTIGATION_CHOICES.manufacturingRecord.subtitle}
+                    options={INVESTIGATION_CHOICES.manufacturingRecord.options}
+                    value={getInvestigationValue("manufacturingRecord")}
+                    onChange={(val) => updateInvestigationSelection("manufacturingRecord", val)}
+                    className="mb-2"
                   />
+
+                  {/* 추가 설명이 필요한 선택지 선택 시 동적 입력창 표시 */}
+                  <InvestigationDetailInputsCard
+                    itemKey="manufacturingRecord"
+                    optionCodeOrLabel={getInvestigationValue("manufacturingRecord")}
+                    values={report.investigationDetails?.manufacturingRecord}
+                    onChange={(fieldKey, val) =>
+                      updateInvestigationDetailField("manufacturingRecord", fieldKey, val)
+                    }
+                  />
+
+                  {/* 자동 생성 문장 카드 */}
+                  {(() => {
+                    const result = getAssembledSentenceResult("manufacturingRecord");
+                    return (
+                      <GeneratedSentenceCard
+                        sentence={result.sentence}
+                        currentValue={report.lotHistory.productionLogNote}
+                        isExtraInputRequired={result.isExtraInputRequired}
+                        isMissingInput={!result.isComplete}
+                        missingFields={result.missingFields}
+                        onResetToDefault={(sentence) =>
+                          updateLotHistory({ productionLogNote: sentence })
+                        }
+                      />
+                    );
+                  })()}
+
+                  <div className="mt-2 mb-3">
+                    <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                      제조기록 조사 내용 (자유 수정 가능)
+                    </label>
+                    <textarea
+                      id="field-lot-production-log"
+                      rows={2}
+                      value={report.lotHistory.productionLogNote}
+                      onChange={(e) => updateLotHistory({ productionLogNote: e.target.value })}
+                      placeholder="해당 제조번호의 제조기록 및 작업기록을 확인한 결과, 제조 및 품질관리 과정에서 특이사항은 확인되지 않았습니다."
+                      className="w-full text-xs p-2.5 border border-slate-300 rounded-md focus:ring-1 focus:ring-blue-500 focus:outline-none leading-relaxed font-medium"
+                    />
+                  </div>
                 </div>
 
-                <div>
+                {/* 3. 품질검사 결과 */}
+                <div id="field-choice-quality-inspection">
                   <div className="flex items-center justify-between mb-1">
                     <label className="text-xs font-semibold text-slate-700">
-                      생산 완제품 품질검사 성적서 확인 결과
+                      3. 품질검사 결과 (완제품 품질검사 성적서 확인)
                     </label>
                     <PhraseDropdown
                       fieldKey="qualityTestRecord"
@@ -3417,14 +3861,56 @@ export function InputFormPane({
                       itemLabel="출하 전 완제품 품질검사(COA)"
                     />
                   </div>
-                  <input
-                    id="field-lot-quality-test"
-                    type="text"
-                    value={report.lotHistory.qualityTestRecord}
-                    onChange={(e) => updateLotHistory({ qualityTestRecord: e.target.value })}
-                    placeholder="예: 완제품 품질검사 성적서(COA) 확인 결과 관능/미생물/이화학 전 항목 적합 판정"
-                    className="w-full text-xs px-3 py-2 border border-slate-300 rounded-md focus:ring-1 focus:ring-blue-500 focus:outline-none"
+                  <InvestigationButtonGroup
+                    itemNumber={3}
+                    label="3. 품질검사 결과"
+                    description={INVESTIGATION_CHOICES.qualityInspection.subtitle}
+                    options={INVESTIGATION_CHOICES.qualityInspection.options}
+                    value={getInvestigationValue("qualityInspection")}
+                    onChange={(val) => updateInvestigationSelection("qualityInspection", val)}
+                    className="mb-2"
                   />
+
+                  {/* 추가 설명이 필요한 선택지 선택 시 동적 입력창 표시 */}
+                  <InvestigationDetailInputsCard
+                    itemKey="qualityInspection"
+                    optionCodeOrLabel={getInvestigationValue("qualityInspection")}
+                    values={report.investigationDetails?.qualityInspection}
+                    onChange={(fieldKey, val) =>
+                      updateInvestigationDetailField("qualityInspection", fieldKey, val)
+                    }
+                  />
+
+                  {/* 자동 생성 문장 카드 */}
+                  {(() => {
+                    const result = getAssembledSentenceResult("qualityInspection");
+                    return (
+                      <GeneratedSentenceCard
+                        sentence={result.sentence}
+                        currentValue={report.lotHistory.qualityTestRecord}
+                        isExtraInputRequired={result.isExtraInputRequired}
+                        isMissingInput={!result.isComplete}
+                        missingFields={result.missingFields}
+                        onResetToDefault={(sentence) =>
+                          updateLotHistory({ qualityTestRecord: sentence })
+                        }
+                      />
+                    );
+                  })()}
+
+                  <div className="mt-2 mb-3">
+                    <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                      품질검사 결과 내용 (자유 수정 가능)
+                    </label>
+                    <textarea
+                      id="field-lot-quality-test"
+                      rows={2}
+                      value={report.lotHistory.qualityTestRecord}
+                      onChange={(e) => updateLotHistory({ qualityTestRecord: e.target.value })}
+                      placeholder="해당 제조번호의 품질검사 결과를 확인한 결과, 관련 검사 항목은 기준에 적합한 것으로 확인되었습니다."
+                      className="w-full text-xs p-2.5 border border-slate-300 rounded-md focus:ring-1 focus:ring-blue-500 focus:outline-none leading-relaxed font-medium"
+                    />
+                  </div>
                 </div>
 
                 <div>
@@ -3451,10 +3937,11 @@ export function InputFormPane({
                   />
                 </div>
 
-                <div>
+                {/* 2. 보관품 조사 */}
+                <div id="field-choice-retained-sample">
                   <div className="flex items-center justify-between mb-1">
                     <label className="text-xs font-semibold text-slate-700">
-                      동일 Lot 당사 보관품(공장 보관 검체) 확인 결과
+                      2. 보관품 조사 (동일 Lot 당사 보관 검체 확인 결과)
                     </label>
                     <div className="flex items-center gap-2">
                       <PhraseDropdown
@@ -3480,16 +3967,58 @@ export function InputFormPane({
                       itemLabel="동일 Lot 자사 공장 보관품(검체) 조사"
                     />
                   </div>
-                  <textarea
-                    id="field-lot-retained-sample"
-                    rows={3}
-                    value={report.lotHistory.retainedSampleCheck}
-                    onChange={(e) =>
-                      updateLotHistory({ retainedSampleCheck: e.target.value })
-                    }
-                    placeholder="동일 제조번호 자사 공장 보관품(검체) 확인 결과, 성상 및 맛/향에 이상이 없으며 이물 혼입 등의 특이사항이 전혀 확인되지 않았습니다."
-                    className="w-full text-xs p-2.5 border border-slate-300 rounded-md focus:ring-1 focus:ring-blue-500 focus:outline-none leading-relaxed font-medium"
+                  <InvestigationButtonGroup
+                    itemNumber={2}
+                    label="2. 보관품 조사"
+                    description={INVESTIGATION_CHOICES.retainedSample.subtitle}
+                    options={INVESTIGATION_CHOICES.retainedSample.options}
+                    value={getInvestigationValue("retainedSample")}
+                    onChange={(val) => updateInvestigationSelection("retainedSample", val)}
+                    className="mb-2"
                   />
+
+                  {/* 추가 설명이 필요한 선택지 선택 시 동적 입력창 표시 */}
+                  <InvestigationDetailInputsCard
+                    itemKey="retainedSample"
+                    optionCodeOrLabel={getInvestigationValue("retainedSample")}
+                    values={report.investigationDetails?.retainedSample}
+                    onChange={(fieldKey, val) =>
+                      updateInvestigationDetailField("retainedSample", fieldKey, val)
+                    }
+                  />
+
+                  {/* 자동 생성 문장 카드 */}
+                  {(() => {
+                    const result = getAssembledSentenceResult("retainedSample");
+                    return (
+                      <GeneratedSentenceCard
+                        sentence={result.sentence}
+                        currentValue={report.lotHistory.retainedSampleCheck}
+                        isExtraInputRequired={result.isExtraInputRequired}
+                        isMissingInput={!result.isComplete}
+                        missingFields={result.missingFields}
+                        onResetToDefault={(sentence) =>
+                          updateLotHistory({ retainedSampleCheck: sentence })
+                        }
+                      />
+                    );
+                  })()}
+
+                  <div className="mt-2 mb-3">
+                    <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                      보관품 조사 내용 (자유 수정 가능)
+                    </label>
+                    <textarea
+                      id="field-lot-retained-sample"
+                      rows={3}
+                      value={report.lotHistory.retainedSampleCheck}
+                      onChange={(e) =>
+                        updateLotHistory({ retainedSampleCheck: e.target.value })
+                      }
+                      placeholder="동일 제조번호의 보관품을 확인한 결과, 외관 및 내용물에서 특이사항은 확인되지 않았습니다."
+                      className="w-full text-xs p-2.5 border border-slate-300 rounded-md focus:ring-1 focus:ring-blue-500 focus:outline-none leading-relaxed font-medium"
+                    />
+                  </div>
                 </div>
 
                 <div id="field-lot-retained-photos">
@@ -3499,6 +4028,88 @@ export function InputFormPane({
                     onChange={(photos) => updateLotHistory({ retainedSamplePhotos: photos })}
                     maxPhotos={4}
                   />
+                </div>
+
+                {/* 5. 원부자재 조사 */}
+                <div id="field-choice-raw-material" className="pt-3 border-t border-slate-200">
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-xs font-semibold text-slate-700">
+                      5. 원부자재 조사 (원료 및 부자재 점검 및 LOT 추적)
+                    </label>
+                    <div className="flex items-center gap-2">
+                      <PhraseDropdown
+                        fieldKey="rawMaterialCheck"
+                        activePresetId={selectedPresetId || undefined}
+                        onSelectPhrase={(content) =>
+                          updateLotHistory({ rawMaterialCheck: content })
+                        }
+                        onOpenManager={onOpenPhraseManager}
+                      />
+                      <AiPolishButton
+                        text={report.lotHistory.rawMaterialCheck || ""}
+                        fieldName="원부자재 점검 결과"
+                        status={report.lotHistory.rawMaterialStatus}
+                        onApply={(p) => updateLotHistory({ rawMaterialCheck: p })}
+                      />
+                    </div>
+                  </div>
+                  <div className="mb-2">
+                    <InvestigationStatusSelector
+                      status={report.lotHistory.rawMaterialStatus || "확인 완료"}
+                      onChange={(st) => updateLotHistory({ rawMaterialStatus: st })}
+                      itemLabel="원부자재 및 LOT 추적 점검"
+                    />
+                  </div>
+                  <InvestigationButtonGroup
+                    itemNumber={5}
+                    label="5. 원부자재 조사"
+                    description={INVESTIGATION_CHOICES.rawMaterial.subtitle}
+                    options={INVESTIGATION_CHOICES.rawMaterial.options}
+                    value={getInvestigationValue("rawMaterial")}
+                    onChange={(val) => updateInvestigationSelection("rawMaterial", val)}
+                    className="mb-2"
+                  />
+
+                  {/* 추가 설명이 필요한 선택지 선택 시 동적 입력창 표시 */}
+                  <InvestigationDetailInputsCard
+                    itemKey="rawMaterial"
+                    optionCodeOrLabel={getInvestigationValue("rawMaterial")}
+                    values={report.investigationDetails?.rawMaterial}
+                    onChange={(fieldKey, val) =>
+                      updateInvestigationDetailField("rawMaterial", fieldKey, val)
+                    }
+                  />
+
+                  {/* 자동 생성 문장 카드 */}
+                  {(() => {
+                    const result = getAssembledSentenceResult("rawMaterial");
+                    return (
+                      <GeneratedSentenceCard
+                        sentence={result.sentence}
+                        currentValue={report.lotHistory.rawMaterialCheck || ""}
+                        isExtraInputRequired={result.isExtraInputRequired}
+                        isMissingInput={!result.isComplete}
+                        missingFields={result.missingFields}
+                        onResetToDefault={(sentence) =>
+                          updateLotHistory({ rawMaterialCheck: sentence })
+                        }
+                      />
+                    );
+                  })()}
+
+                  <div className="mt-2 mb-3">
+                    <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                      원부자재 조사 내용 (자유 수정 가능)
+                    </label>
+                    <textarea
+                      id="field-lot-raw-material"
+                      rows={2}
+                      value={report.lotHistory.rawMaterialCheck || ""}
+                      onChange={(e) => updateLotHistory({ rawMaterialCheck: e.target.value })}
+                      placeholder="관련 원부자재의 제조 및 입고 기록을 확인한 결과, 특이사항은 확인되지 않았습니다."
+                      className="w-full text-xs p-2.5 border border-slate-300 rounded-md focus:ring-1 focus:ring-blue-500 focus:outline-none leading-relaxed font-medium"
+                    />
+                  </div>
                 </div>
               </div>
             ) : (

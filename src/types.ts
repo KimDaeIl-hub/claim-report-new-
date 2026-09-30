@@ -172,6 +172,8 @@ export interface ReportData {
     criticalControlPoint: string; // 클레임 발생 유력 지점 연계 분석
     ccpStatus?: InvestigationStatus;
     highlightedStep: string;
+    processInvestigationResult?: string; // 제조공정 조사 고유값 (예: "no_issue")
+    processInvestigationNote?: string;   // 제조공정 조사 세부 기술 내용
   };
 
   // [5] 동일 Lot 제조 및 품질검사 이력
@@ -186,7 +188,13 @@ export interface ReportData {
     priorClaimsStatus?: InvestigationStatus;
     retainedSampleCheck: string; // 당사 보관품 확인 결과
     retainedSampleStatus?: InvestigationStatus;
+    rawMaterialCheck?: string; // 원부자재 조사 결과
+    rawMaterialStatus?: InvestigationStatus;
     retainedSamplePhotos: PhotoAttachment[];
+    manufacturingRecordResult?: string; // 제조기록 조사 고유값 (예: "no_issue")
+    storageSampleResult?: string;       // 보관품 조사 고유값 (예: "normal")
+    qualityInspectionResult?: string;   // 품질검사 결과 고유값 (예: "pass")
+    materialInvestigationResult?: string;// 원부자재 조사 고유값 (예: "no_issue")
   };
 
   // [6] 원인 분석 및 재발방지대책
@@ -217,6 +225,120 @@ export interface ReportData {
 
   // [9] 내부용 이메일 vs 소비자용 안내문 항목별 포함 설정
   emailAudienceSettings?: EmailAudienceSettings;
+
+  // [10] 5대 핵심 항목 조사결과 고유값 및 버튼 선택 상태 (완벽한 상호 호환)
+  investigationResults?: InvestigationResultsData;
+  manufacturingRecordResult?: string;
+  storageSampleResult?: string;
+  qualityInspectionResult?: string;
+  processInvestigationResult?: string;
+  materialInvestigationResult?: string;
+  investigationSelections?: InvestigationItemSelection;
+  investigationDetails?: InvestigationDetailInputs;
+}
+
+export interface InvestigationDetailInputs {
+  // 1. 제조기록 조사
+  manufacturingRecord?: {
+    processDeviationDetail?: string; // 공정조건 이탈 내용 (예: "후살균 온도 기준 미달")
+    workLogErrorDetail?: string;     // 작업기록 이상 내용 (예: "원료 투입시간 기록 누락")
+    equipmentErrorDetail?: string;   // 설비 이상 내용 (예: "충전기 노즐 2번 작동 이상")
+    [key: string]: string | undefined;
+  };
+  // 2. 보관품 조사
+  retainedSample?: {
+    appearanceDefectDetail?: string; // 외관 이상 내용 (예: "용기 표면 긁힘")
+    contentDefectDetail?: string;    // 내용물 이상 내용 (예: "미세한 침전 확인")
+    foreignMatterDetail?: string;    // 이물 특징 (예: "검은색 섬유상 이물")
+    [key: string]: string | undefined;
+  };
+  // 3. 품질검사 결과
+  qualityInspection?: {
+    testItem?: string;               // 검사항목 (예: "pH")
+    testValue?: string;              // 측정결과 (예: "3.2")
+    standard?: string;               // 기준 (예: "3.5~4.5")
+    [key: string]: string | undefined;
+  };
+  // 4. 제조공정 조사
+  manufacturingProcess?: {
+    processAnomalyDetail?: string;     // 공정 중 이상 내용 (예: "살균 후 냉각수 온도 급상승")
+    contaminationRiskProcess?: string; // 검토 대상 공정 (예: "충전공정")
+    processCauseDetail?: string;       // 확인된 원인 (예: "충전 노즐 패킹 마모")
+    [key: string]: string | undefined;
+  };
+  // 5. 원부자재 조사
+  rawMaterial?: {
+    rawMaterialDetail?: string;
+    packagingMaterialDetail?: string;
+    [key: string]: string | undefined;
+  };
+  [key: string]: Record<string, string | undefined> | undefined;
+}
+
+export type ManufacturingRecordOptionCode =
+  | "no_issue"
+  | "process_deviation"
+  | "work_log_error"
+  | "equipment_error"
+  | "test_result_error"
+  | "other"
+  | "not_applicable"
+  | string;
+
+export type StorageSampleOptionCode =
+  | "normal"
+  | "appearance_defect"
+  | "content_defect"
+  | "foreign_matter_found"
+  | "no_sample"
+  | "unverifiable"
+  | "other"
+  | "not_applicable"
+  | string;
+
+export type QualityInspectionOptionCode =
+  | "pass"
+  | "fail"
+  | "no_record"
+  | "needs_confirmation"
+  | "not_applicable"
+  | string;
+
+export type ProcessInvestigationOptionCode =
+  | "no_issue"
+  | "process_anomaly"
+  | "contamination_risk_review"
+  | "process_cause_identified"
+  | "process_cause_unidentified"
+  | "other"
+  | "not_applicable"
+  | string;
+
+export type MaterialInvestigationOptionCode =
+  | "no_issue"
+  | "raw_material_defect"
+  | "packaging_material_defect"
+  | "lot_tracking_needed"
+  | "unverifiable"
+  | "other"
+  | "not_applicable"
+  | string;
+
+export interface InvestigationResultsData {
+  manufacturingRecordResult?: ManufacturingRecordOptionCode;
+  storageSampleResult?: StorageSampleOptionCode;
+  qualityInspectionResult?: QualityInspectionOptionCode;
+  processInvestigationResult?: ProcessInvestigationOptionCode;
+  materialInvestigationResult?: MaterialInvestigationOptionCode;
+}
+
+export interface InvestigationItemSelection {
+  manufacturingRecord?: string | string[]; // 1. 제조기록 조사
+  retainedSample?: string | string[];      // 2. 보관품 조사
+  qualityInspection?: string | string[];   // 3. 품질검사 결과
+  manufacturingProcess?: string | string[];// 4. 제조공정 조사
+  rawMaterial?: string | string[];         // 5. 원부자재 조사
+  [key: string]: string | string[] | undefined;
 }
 
 export interface EmailAudienceSettings {
