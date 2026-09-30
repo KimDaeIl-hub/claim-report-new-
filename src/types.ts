@@ -85,6 +85,15 @@ export interface ReportData {
     packageType: string;
     manufacturerType?: "internal" | "oem";
     factoryId?: string;
+    productId?: string;
+    claimTypeId?: string;
+    productCode?: string;
+    subProductType?: string;
+    volume?: string;
+    containerType?: string;
+    manufacturerId?: string;
+    manufactureLineId?: string;
+    manufactureLine?: string;
   };
 
   // [3] 정밀 분석 결과 (각 항목별 Skip 및 원리 토글)
@@ -235,6 +244,10 @@ export interface ReportData {
   materialInvestigationResult?: string;
   investigationSelections?: InvestigationItemSelection;
   investigationDetails?: InvestigationDetailInputs;
+
+  // [11] 복사 이력 추적 (소비자용 보고서에는 미표시, 내부 관리용)
+  copiedFromClaimId?: string;
+  copiedFromDocNumber?: string;
 }
 
 export interface InvestigationDetailInputs {
@@ -400,4 +413,153 @@ export interface ClaimPreset {
   isBuiltin?: boolean;
   linkedPhraseIds?: string[];
   data: Partial<ReportData>;
+}
+
+// =========================================================================
+// [향후 확장 마스터 모델 인터페이스 (Product / Process / ClaimType Master)]
+// =========================================================================
+
+/**
+ * 제품 마스터 (Product Master)
+ * 제품 기본정보 및 추가정보 관리 (클레임 작성, 프리셋, 공정도, 유사사례 연계의 기준 축)
+ */
+export interface ProductMaster {
+  id: string; // e.g. "prod-vita500-100"
+
+  // [기본정보]
+  productName: string; // 제품명 (예: "비타500 100ml")
+  productCode: string; // 제품코드 (예: "KD-VIT-001")
+  productType: string; // 제품 유형 (예: "혼합음료", "다류", "의약외품", "건강기능식품")
+  subProductType: string; // 세부 제품 유형 (예: "비타민음료", "헛개음료", "옥수수수염차")
+  volume: string; // 용량 (예: "100ml", "500ml", "1.5L", "240ml")
+  packageType: string; // 포장 형태 (예: "유리병", "Aseptic PET", "캔", "파우치")
+  containerType: string; // 용기 종류 (예: "갈색 유리병 100ml", "내열 무균 PET 500ml")
+  manufacturerId?: string; // 제조처 Master ID
+  manufacturer: string; // 제조처 (예: "광동제약 평택공장", "삼양패키징 광혜원공장")
+  manufactureLineId?: string; // 제조라인 Master ID
+  manufactureLine: string; // 제조라인 (예: "1호 라인(유리병)", "2호 라인(PET)", "파우치 충전라인")
+  isActive: boolean; // 사용 여부 (true: 사용 중, false: 미사용)
+
+  // [추가정보]
+  description?: string; // 제품 설명
+  primaryClaimTypes: string[]; // 주요 클레임 유형 (예: ["유리 파손/이물", "캡 흠집/탄화", "변질/산패"])
+  relatedProcessPresetId?: string; // 관련 제조공정 ID (factoryProcessPreset.id)
+  relatedProcessName?: string; // 관련 제조공정 명칭
+  notes?: string; // 비고
+
+  // 시스템/호환용 메타
+  isCustom?: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export type ManufacturerType = "internal" | "oem" | "etc";
+
+/**
+ * 제조처 Master (Manufacturer Master)
+ * 광동제약 자사 공장, 외주(OEM) 협력사 및 기타 제조처 관리
+ */
+export interface ManufacturerMaster {
+  id: string; // e.g. "mfg-kd-pt", "mfg-samyang"
+  name: string; // 제조처명 (예: "광동제약 평택공장", "삼양패키징 광혜원공장")
+  type: ManufacturerType; // "internal" (자사) | "oem" (OEM) | "etc" (기타)
+  isActive: boolean; // 사용 여부 (true: 사용 중, false: 미사용)
+  notes?: string; // 비고
+  factoryLocation?: string; // 공장 소재지
+  teamOrCategory?: string; // 주력 생산 품목군/팀
+  defaultProcessPresetId?: string; // 기본 공정도 매핑
+  createdAt?: string;
+  updatedAt?: string;
+  isCustom?: boolean;
+}
+
+/**
+ * 제조라인 Master (Production Line Master)
+ * 제조처 하위의 개별 생산 라인 규격 관리
+ */
+export interface ManufactureLineMaster {
+  id: string; // e.g. "line-kd-pt-01", "line-samyang-aseptic-02"
+  manufacturerId: string; // 제조처 ID (ManufacturerMaster.id)
+  lineName: string; // 라인명 (예: "1호 라인(유리병 충전)", "Aseptic 2호기(무균 PET 라인)")
+  description?: string; // 라인 설명
+  productCategory: string; // 생산 제품군 (예: "유리병 비타민/혼합음료", "무균 PET 다류", "알루미늄 캔")
+  isActive: boolean; // 사용 여부 (true: 사용 중, false: 미사용)
+  notes?: string; // 비고
+  createdAt?: string;
+  updatedAt?: string;
+  isCustom?: boolean;
+}
+
+/**
+ * 제조공정 개별 공정 단위 마스터 (Process Step Master)
+ * 향후 클레임 조사 시 특정 공정 자동 검색 및 연계를 위한 구조화 데이터
+ */
+export interface ProcessStepMaster {
+  id: string; // 공정 ID (고유 식별자, e.g. "step-pt01-01")
+  presetId?: string; // 소속 공정도 ID (FactoryProcessPreset.id)
+  manufacturerId?: string; // 제조처 ID
+  manufacturer: string; // 제조처
+  manufactureLineId?: string; // 제조라인 ID
+  manufactureLine: string; // 제조라인
+  stepNumber: number; // 공정 순서 (1, 2, 3...)
+  processName: string; // 공정명 (예: "원료 투입", "UHT 순간살균", "충진", "캡핑")
+  description: string; // 공정 설명
+  keyEquipment: string; // 주요 설비 (예: "초고온 UHT 살균기", "ROPP 캡퍼")
+  controlPoints: string; // 주요 관리항목 (예: "온도 135±2℃, 시간 30초", "캡핑 토크 12~16 kgf·cm")
+  rawMaterials?: string; // 관련 원부자재 (예: "비타민C, 타우린, 정제수", "갈색 유리병, 캡")
+  isCCP: boolean; // 관련 CCP 여부
+  ccpNumber?: string; // CCP 식별 번호 (예: "CCP-1B", "CCP-2P")
+  qualityRisks: string; // 주요 품질 리스크
+  possibleDefects: string[]; // 발생 가능한 이상 유형 (예: ["변질/산패", "캡 흠집/탄화", "누액", "이물 혼입"])
+  isActive: boolean; // 사용 여부 (true: 사용 중, false: 미사용)
+  createdAt?: string;
+  updatedAt?: string;
+  isCustom?: boolean;
+}
+
+/**
+ * 제조공정 마스터 (Process Master)
+ * 라인별 공정도, 공정 단계, 세척/여과망 규격 및 CCP 제어 기준
+ */
+export interface ProcessMaster {
+  id: string;
+  manufacturerId: string;
+  name: string;
+  processFlow: string;
+  processSteps: string[];
+  filtrationAnalysis: string;
+  cleaningAnalysis: string;
+  criticalControlPoint: string;
+  stepsData?: ProcessStepMaster[];
+  isCustom?: boolean;
+}
+
+/**
+ * 클레임 유형 마스터 (Claim Type Master)
+ * 이물, 변질, 누액, 표시오류, 내용량 등 클레임 유형 정의 및 권장 조사 패키지 연계
+ */
+export interface ClaimTypeMaster {
+  id: string; // e.g. "claim-type-foreign-glass"
+  category: "foreign" | "spoilage" | "leak" | "label" | "volume" | "etc";
+  name: string;
+  description: string;
+  requiredAnalysisKeys: string[]; // 필수 권장 기기/분석 항목
+  defaultInvestigationSelections?: Record<string, string>; // 기본 5대 조사 항목 선택값
+  linkedPhraseCategoryIds: string[]; // 연계 상용구 카테고리
+  recommendedPresetIds?: string[]; // 연계 프리셋 ID
+}
+
+/**
+ * 조사 패키지 자동 구성 정의 (Investigation Package)
+ * 제품 + 제조공정 + 클레임 유형 결합 시 자동 활성화되는 종합 조사 세트
+ */
+export interface InvestigationPackageConfig {
+  id: string;
+  name: string;
+  productId?: string;
+  manufacturerId?: string;
+  claimTypeId?: string;
+  suggestedPresetId?: string;
+  recommendedChecklist?: string[];
+  autoStandardPhrases?: string[];
 }

@@ -18,8 +18,11 @@ import {
   Plus,
   Layers,
   Save,
+  History,
+  Package,
+  Factory,
 } from "lucide-react";
-import { ReportData, ClaimPreset } from "./types";
+import { ReportData, ClaimPreset, ProductMaster } from "./types";
 import { INITIAL_REPORT_DATA } from "./data/presets";
 import { InputFormPane } from "./components/InputFormPane";
 import { ReportPreviewPane } from "./components/ReportPreviewPane";
@@ -31,6 +34,9 @@ import { PresetManagerModal } from "./components/PresetManagerModal";
 import { UnifiedQualityManagerModal, ManagerTab } from "./components/UnifiedQualityManagerModal";
 import { FactoryProcessPreset } from "./data/factoryProcessPresets";
 import { ReportValidationModal } from "./components/ReportValidationModal";
+import { PastClaimSearchModal } from "./components/PastClaimSearchModal";
+import { ProductMasterModal } from "./components/ProductMasterModal";
+import { ManufacturerMasterModal } from "./components/ManufacturerMasterModal";
 import { validateReport } from "./utils/reportValidator";
 import {
   ReportListDrawer,
@@ -113,6 +119,10 @@ export default function App() {
   const [isMasterManagerOpen, setIsMasterManagerOpen] = useState(false);
   const [masterManagerTab, setMasterManagerTab] = useState<ManagerTab>("presets");
   const [isValidationModalOpen, setIsValidationModalOpen] = useState(false);
+  const [isPastClaimModalOpen, setIsPastClaimModalOpen] = useState(false);
+  const [isProductMasterOpen, setIsProductMasterOpen] = useState(false);
+  const [isProductSelectionMode, setIsProductSelectionMode] = useState(false);
+  const [isManufacturerMasterOpen, setIsManufacturerMasterOpen] = useState(false);
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
@@ -246,6 +256,17 @@ export default function App() {
     showToast("새 보고서 작성이 시작되었습니다.");
   };
 
+  const handleCopyAsNewClaim = (newReport: ReportData) => {
+    setReport(newReport);
+    saveReportToDb(newReport);
+    setIsPastClaimModalOpen(false);
+    setViewMode("form");
+    setFormActiveTab("product");
+    showToast(
+      `'${newReport.copiedFromDocNumber || "과거 클레임"}'을(를) 기반으로 새로운 클레임이 생성되었습니다. (제조번호를 입력해 주세요)`
+    );
+  };
+
   const handleApplyPreset = (preset: ClaimPreset) => {
     const updated = mergePresetData(report, preset.data);
     setReport(updated);
@@ -281,6 +302,36 @@ export default function App() {
     setIsMasterManagerOpen(false);
     setViewMode("form");
     showToast(`"${preset.name}" 제조공정도가 보고서에 적용되었습니다.`);
+  };
+
+  const handleApplyProduct = (product: ProductMaster) => {
+    setReport((prev) => {
+      const next: ReportData = {
+        ...prev,
+        productInfo: {
+          ...prev.productInfo,
+          productId: product.id,
+          productName: product.productName,
+          packageType: product.packageType || prev.productInfo.packageType,
+          manufacturerId: product.manufacturerId || prev.productInfo.manufacturerId,
+          manufacturer: product.manufacturer || prev.productInfo.manufacturer,
+          manufactureLineId: product.manufactureLineId || prev.productInfo.manufactureLineId,
+          manufactureLine: product.manufactureLine || prev.productInfo.manufactureLine,
+          manufacturerType: product.manufacturer.includes("광동") ? "internal" : "oem",
+          productCode: product.productCode,
+          subProductType: product.subProductType,
+          volume: product.volume,
+          containerType: product.containerType,
+          factoryId: product.relatedProcessPresetId || prev.productInfo.factoryId,
+        },
+      };
+      saveReportToDb(next);
+      return next;
+    });
+    setIsProductMasterOpen(false);
+    setViewMode("form");
+    setFormActiveTab("product");
+    showToast(`'${product.productName}' 제품 마스터 정보가 보고서에 적용되었습니다.`);
   };
 
   const handleApplyPhrase = (fieldKey: string, content: string) => {
@@ -466,6 +517,33 @@ export default function App() {
             <span className="sm:hidden">통합관리</span>
           </button>
 
+          {/* Product Master Button */}
+          <button
+            type="button"
+            id="btn-nav-product-master"
+            onClick={() => {
+              setIsProductSelectionMode(false);
+              setIsProductMasterOpen(true);
+            }}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold text-slate-200 hover:text-white bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 transition-colors"
+            title="제품 Master (제품명, 코드, 포장, 제조라인) 표준 관리"
+          >
+            <Package className="w-3.5 h-3.5 text-blue-400" />
+            <span className="hidden sm:inline">제품 Master</span>
+          </button>
+
+          {/* Manufacturer & Line Master Button */}
+          <button
+            type="button"
+            id="btn-nav-manufacturer-master"
+            onClick={() => setIsManufacturerMasterOpen(true)}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold text-slate-200 hover:text-white bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 transition-colors"
+            title="제조처 및 제조라인 Master (자사 공장, OEM, 라인 규격) 표준 관리"
+          >
+            <Factory className="w-3.5 h-3.5 text-indigo-400" />
+            <span className="hidden sm:inline">제조처/라인 Master</span>
+          </button>
+
           {/* Preset Manager Button */}
           <button
             type="button"
@@ -530,6 +608,18 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-2">
+            {/* [이전 클레임 불러오기] 버튼 */}
+            <button
+              type="button"
+              id="btn-subheader-load-past-claim"
+              onClick={() => setIsPastClaimModalOpen(true)}
+              className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-bold text-blue-700 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-lg transition-colors shadow-2xs cursor-pointer active:scale-95"
+              title="과거 클레임 이력 검색 및 상세 내용 조회"
+            >
+              <History className="w-3.5 h-3.5 text-blue-600" />
+              <span>이전 클레임 불러오기</span>
+            </button>
+
             {/* Quick Validation Trigger in Subheader */}
             <button
               type="button"
@@ -613,6 +703,12 @@ export default function App() {
               setIsMasterManagerOpen(true);
             }}
             onOpenValidation={() => setIsValidationModalOpen(true)}
+            onOpenPastClaims={() => setIsPastClaimModalOpen(true)}
+            onCopyAsNewClaim={handleCopyAsNewClaim}
+            onOpenProductMaster={(selectionMode) => {
+              setIsProductSelectionMode(!!selectionMode);
+              setIsProductMasterOpen(true);
+            }}
           />
         </div>
 
@@ -715,6 +811,27 @@ export default function App() {
         summary={validationSummary}
         report={report}
         onNavigateToField={handleNavigateToField}
+      />
+
+      <PastClaimSearchModal
+        isOpen={isPastClaimModalOpen}
+        onClose={() => setIsPastClaimModalOpen(false)}
+        onCopyAsNewClaim={handleCopyAsNewClaim}
+      />
+
+      <ProductMasterModal
+        isOpen={isProductMasterOpen}
+        onClose={() => setIsProductMasterOpen(false)}
+        onSelectProduct={handleApplyProduct}
+        selectedProductId={report.productInfo.productId}
+        isSelectionMode={isProductSelectionMode}
+      />
+
+      <ManufacturerMasterModal
+        isOpen={isManufacturerMasterOpen}
+        onClose={() => setIsManufacturerMasterOpen(false)}
+        selectedManufacturerId={report.productInfo.manufacturerId}
+        selectedLineId={report.productInfo.manufactureLineId}
       />
 
       <ReportListDrawer

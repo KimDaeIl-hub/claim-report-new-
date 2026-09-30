@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import {
   User,
   Package,
@@ -31,9 +31,15 @@ import {
   Factory,
   Workflow,
   RotateCcw,
+  ArrowRight,
+  ChevronLeft,
+  Copy,
+  Edit3,
 } from "lucide-react";
-import { ReportData, PhysicochemicalItem, AdditionalTestItem, ClaimPreset, InvestigationStatus, InvestigationItemSelection, InvestigationResultsData } from "../types";
+import { ReportData, PhysicochemicalItem, AdditionalTestItem, ClaimPreset, InvestigationStatus, InvestigationItemSelection, InvestigationResultsData, ProductMaster } from "../types";
 import { getAllPresets } from "../data/presets";
+import { findProductById, findProductByName } from "../data/productMaster";
+import { ProductMasterModal } from "./ProductMasterModal";
 import { parseMhtFile, ParsedMhtClaimData } from "../utils/mhtParser";
 import { mergePresetData, isUserPhoto } from "../utils/storage";
 import { AiPolishButton } from "./AiPolishButton";
@@ -58,6 +64,7 @@ import { validateReport } from "../utils/reportValidator";
 import { ShieldCheck, ShieldAlert } from "lucide-react";
 import { MhtReviewModal } from "./MhtReviewModal";
 import { FactoryProcessModal } from "./FactoryProcessModal";
+import { PastClaimSearchModal } from "./PastClaimSearchModal";
 import {
   FACTORY_PROCESS_PRESETS,
   FactoryProcessPreset,
@@ -73,6 +80,7 @@ import {
 } from "../utils/claimTypeConfig";
 import { InvestigationProgressTracker } from "./InvestigationProgressTracker";
 import { ProgressItem, ChecklistStatus, calculateReportProgress } from "../utils/progressTracker";
+import { getNextRequiredAction, WorkflowStepId } from "../utils/requiredFieldsManager";
 
 interface InputFormPaneProps {
   report: ReportData;
@@ -81,6 +89,9 @@ interface InputFormPaneProps {
   onOpenPresetManager?: () => void;
   onOpenProcessManager?: () => void;
   onOpenValidation?: () => void;
+  onOpenPastClaims?: () => void;
+  onCopyAsNewClaim?: (newReport: ReportData) => void;
+  onOpenProductMaster?: (selectionMode?: boolean) => void;
   activeSectionId?: string;
   activeTab?: string;
   onTabChange?: (tab: string) => void;
@@ -93,6 +104,9 @@ export function InputFormPane({
   onOpenPresetManager,
   onOpenProcessManager,
   onOpenValidation,
+  onOpenPastClaims,
+  onCopyAsNewClaim,
+  onOpenProductMaster,
   activeSectionId,
   activeTab: propActiveTab,
   onTabChange,
@@ -102,6 +116,60 @@ export function InputFormPane({
   const setActiveTab = (tabId: string) => {
     if (onTabChange) onTabChange(tabId);
     setInternalTab(tabId);
+  };
+
+  const [isInternalPastClaimOpen, setIsInternalPastClaimOpen] = useState(false);
+  const handleOpenPastClaims = () => {
+    if (onOpenPastClaims) {
+      onOpenPastClaims();
+    } else {
+      setIsInternalPastClaimOpen(true);
+    }
+  };
+
+  // 제품 Master 모달 상태
+  const [isInternalProductModalOpen, setIsInternalProductModalOpen] = useState(false);
+  const [isInternalProductSelectionMode, setIsInternalProductSelectionMode] = useState(true);
+
+  const handleOpenProductMaster = (selectionMode = true) => {
+    if (onOpenProductMaster) {
+      onOpenProductMaster(selectionMode);
+    } else {
+      setIsInternalProductSelectionMode(selectionMode);
+      setIsInternalProductModalOpen(true);
+    }
+  };
+
+  // 현재 입력된 제품과 일치하는 Product Master 탐색 (Product ID 또는 제품명 기준)
+  const matchedProduct = useMemo(() => {
+    return (
+      findProductById(report.productInfo.productId) ||
+      findProductByName(report.productInfo.productName)
+    );
+  }, [report.productInfo.productId, report.productInfo.productName]);
+
+  // 제품 마스터 선택 시 리포트 적용
+  const handleApplyProductFromMaster = (product: ProductMaster) => {
+    onChange({
+      ...report,
+      productInfo: {
+        ...report.productInfo,
+        productId: product.id,
+        productName: product.productName,
+        packageType: product.packageType || report.productInfo.packageType,
+        manufacturerId: product.manufacturerId || report.productInfo.manufacturerId,
+        manufacturer: product.manufacturer || report.productInfo.manufacturer,
+        manufactureLineId: product.manufactureLineId || report.productInfo.manufactureLineId,
+        manufactureLine: product.manufactureLine || report.productInfo.manufactureLine,
+        manufacturerType: product.manufacturer.includes("광동") ? "internal" : "oem",
+        productCode: product.productCode,
+        subProductType: product.subProductType,
+        volume: product.volume,
+        containerType: product.containerType,
+        factoryId: product.relatedProcessPresetId || report.productInfo.factoryId,
+      },
+    });
+    setIsInternalProductModalOpen(false);
   };
 
   const [usePreset, setUsePreset] = useState<boolean>(false);
@@ -877,6 +945,65 @@ export function InputFormPane({
     return "p-3.5 bg-slate-50 border border-slate-200 rounded-xl space-y-3 transition-all";
   };
 
+  // [다음 필수 입력 →] 스마트 네비게이션 액션 산출
+  const nextRequiredAction = getNextRequiredAction(report, currentStep as WorkflowStepId, activeTab);
+
+  const handleNextRequiredNavigation = () => {
+    // 1. 현재 입력값 자동 저장 (중요 조건 준수: 다음 단계로 이동 전 현재 입력값 저장)
+    onChange({ ...report });
+
+    // 2. 모든 필수 항목이 완료된 경우 -> [최종 검토 →]
+    if (nextRequiredAction.isAllCompleted || nextRequiredAction.type === "final_review") {
+      if (onOpenValidation) {
+        onOpenValidation();
+      } else {
+        setActiveTab("conclusion");
+      }
+      return;
+    }
+
+    // 3. 대상 스텝이 현재 스텝과 다르면 탭 전환
+    if (nextRequiredAction.targetStep !== currentStep) {
+      setActiveTab(nextRequiredAction.targetStep);
+    }
+
+    // 4. 대상 입력 위치로 자동 이동 & 포커스 & 시각적 하이라이트
+    if (nextRequiredAction.targetElementId) {
+      setTimeout(() => {
+        const el = document.getElementById(nextRequiredAction.targetElementId!);
+        if (el) {
+          el.scrollIntoView({ behavior: "smooth", block: "center" });
+
+          // 입력창인 경우 포커스
+          if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+            el.focus({ preventScroll: true });
+          } else {
+            const inputChild = el.querySelector("input, textarea, button");
+            if (inputChild instanceof HTMLElement) {
+              inputChild.focus({ preventScroll: true });
+            }
+          }
+
+          // 파란색 펄스 링 강조 효과로 시선 집중 (1.8초 후 복구)
+          el.classList.add("ring-4", "ring-blue-500/60", "ring-offset-2", "transition-all");
+          setTimeout(() => {
+            el.classList.remove("ring-4", "ring-blue-500/60", "ring-offset-2", "transition-all");
+          }, 1800);
+        }
+      }, 100);
+    }
+  };
+
+  // 이전 단계 이동 핸들러 (기존 화면 이동 기능 보존)
+  const handlePreviousStep = () => {
+    onChange({ ...report });
+    const stepOrder: WorkflowStepId[] = ["basic", "investigation", "cause", "conclusion"];
+    const currentIdx = stepOrder.indexOf(currentStep as WorkflowStepId);
+    if (currentIdx > 0) {
+      setActiveTab(stepOrder[currentIdx - 1]);
+    }
+  };
+
   return (
     <div className="flex flex-col h-full bg-white border-r border-slate-200">
       {/* ======================================================== */}
@@ -1042,6 +1169,30 @@ export function InputFormPane({
               )}
             </button>
           )}
+
+          {/* 상단 [다음 필수 입력 →] 빠른 이동 버튼 */}
+          <button
+            type="button"
+            id="btn-top-next-required"
+            onClick={handleNextRequiredNavigation}
+            className={`shrink-0 inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-black rounded-xl transition-all shadow-2xs cursor-pointer active:scale-95 ${
+              nextRequiredAction.isAllCompleted
+                ? "bg-emerald-600 hover:bg-emerald-700 text-white ring-2 ring-emerald-300/60"
+                : "bg-blue-600 hover:bg-blue-700 text-white ring-2 ring-blue-300/60"
+            }`}
+            title={
+              nextRequiredAction.isAllCompleted
+                ? "모든 필수 항목이 완료되었습니다. 최종 보고서 사전 검증으로 이동합니다."
+                : `다음에 작성해야 할 필수 항목('${nextRequiredAction.actionLabel}')으로 자동 이동합니다.`
+            }
+          >
+            {nextRequiredAction.isAllCompleted ? (
+              <Sparkles className="w-3.5 h-3.5 text-emerald-100" />
+            ) : (
+              <ArrowRight className="w-3.5 h-3.5 text-blue-100" />
+            )}
+            <span>{nextRequiredAction.buttonText}</span>
+          </button>
         </div>
       </div>
 
@@ -1213,16 +1364,52 @@ export function InputFormPane({
         {/* ======================================================== */}
         {(currentStep === "basic" || activeTab === "claim" || activeTab === "product") && (
           <div className="space-y-6 animate-in fade-in duration-100">
+            {/* [복사 이력 추적 안내 배너 - 소비자용 보고서에는 미표시, 내부 관리용] */}
+            {report.copiedFromClaimId && (
+              <div className="p-3.5 bg-gradient-to-r from-indigo-50/90 via-blue-50/60 to-slate-50 border border-indigo-200/90 rounded-2xl shadow-2xs flex items-center justify-between gap-3 animate-in fade-in duration-150">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <div className="w-8 h-8 rounded-xl bg-indigo-600 text-white flex items-center justify-center shrink-0 shadow-xs">
+                    <Copy className="w-4 h-4" />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-xs font-bold text-slate-900">
+                        이 클레임은 <span className="text-indigo-800 font-mono font-black underline decoration-indigo-300">{report.copiedFromDocNumber || report.copiedFromClaimId}</span>를 기반으로 생성됨
+                      </span>
+                      <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-indigo-100 text-indigo-800 border border-indigo-200">
+                        내부 이력 연계
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-500 leading-tight mt-0.5">
+                      기존 클레임의 제품 정보·조사 템플릿·공정 설명이 자동 적용되었으며, 제조번호 및 실제 분석 결과는 신규 작성 상태입니다. (소비자용 정식 보고서에는 인쇄되지 않습니다)
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
+
             {/* 섹션 1. 클레임 접수 및 고객 정보 */}
             <div className="bg-white border border-slate-200 rounded-2xl p-4 sm:p-5 shadow-xs space-y-4">
-              <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center justify-between pb-3 border-b border-slate-100 flex-wrap gap-2">
                 <div className="flex items-center gap-2">
                   <span className="w-6 h-6 rounded-lg bg-blue-100 text-blue-700 font-bold text-xs flex items-center justify-center">
                     1
                   </span>
                   <h3 className="text-sm font-bold text-slate-900">클레임 접수 및 고객 정보</h3>
                 </div>
-                <span className="text-xs text-slate-400">불만 인입 경위 및 고객 정보 기재</span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    id="btn-load-past-claims"
+                    onClick={handleOpenPastClaims}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-blue-700 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-xl transition-all shadow-2xs cursor-pointer active:scale-95"
+                    title="과거에 접수된 유사 클레임 이력을 검색하고 상세 내용을 확인합니다."
+                  >
+                    <History className="w-3.5 h-3.5 text-blue-600" />
+                    <span>이전 클레임 불러오기</span>
+                  </button>
+                  <span className="text-xs text-slate-400 hidden sm:inline">불만 인입 경위 및 고객 정보 기재</span>
+                </div>
               </div>
 
             {/* 클레임 유형 맞춤 설정 및 표준 프리셋 (기본 접힘: [유형·프리셋 설정 ▾] 클릭 시 펼침) */}
@@ -1314,6 +1501,34 @@ export function InputFormPane({
                   </div>
                 </div>
               )}
+            </div>
+
+            {/* [과거 클레임 불러오기 및 참고 바로가기] */}
+            <div className="p-3 bg-gradient-to-r from-blue-50/70 via-indigo-50/30 to-slate-50 border border-blue-200 rounded-xl shadow-2xs flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <div className="w-8 h-8 rounded-lg bg-blue-600 text-white flex items-center justify-center shrink-0 shadow-xs">
+                  <History className="w-4 h-4" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-xs font-bold text-slate-900">과거 유사 클레임 이력 검색 및 열람</span>
+                    <span className="px-1.5 py-0.2 rounded text-[10px] font-bold bg-blue-100 text-blue-800">조회 전용</span>
+                  </div>
+                  <p className="text-[11px] text-slate-500 leading-tight">
+                    제품명, 클레임 유형, 제조번호, 제조라인, 접수일, 조사자, 키워드로 과거 조사 기록을 검색하여 확인합니다.
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                id="btn-quick-past-claims"
+                onClick={handleOpenPastClaims}
+                className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-bold text-blue-700 bg-white hover:bg-blue-600 hover:text-white border border-blue-300 hover:border-blue-600 rounded-xl transition-all shadow-2xs cursor-pointer active:scale-95 shrink-0"
+              >
+                <History className="w-3.5 h-3.5" />
+                <span>이전 클레임 불러오기</span>
+              </button>
             </div>
 
             {/* [그룹웨어 .mht 파일 자동 입력 드롭존] */}
@@ -1588,30 +1803,119 @@ export function InputFormPane({
 
             {/* 섹션 2. 접수 대상 제품 정보 */}
             <div className="bg-white border border-slate-200 rounded-2xl p-4 sm:p-5 shadow-xs space-y-4">
-              <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center justify-between pb-3 border-b border-slate-100 flex-wrap gap-2">
                 <div className="flex items-center gap-2">
                   <span className="w-6 h-6 rounded-lg bg-blue-100 text-blue-700 font-bold text-xs flex items-center justify-center">
                     2
                   </span>
                   <h3 className="text-sm font-bold text-slate-900">접수 대상 제품 정보</h3>
                 </div>
-                <span className="text-xs text-slate-400">제품 라벨 및 생산 이력 식별 번호</span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    id="btn-select-product-master"
+                    onClick={() => handleOpenProductMaster(true)}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-blue-700 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-xl transition-all shadow-2xs cursor-pointer active:scale-95"
+                    title="제품 마스터에서 등록된 제품을 선택하여 제품명, 포장 형태, 제조라인을 한 번에 입력합니다."
+                  >
+                    <Package className="w-3.5 h-3.5 text-blue-600" />
+                    <span>제품 Master에서 선택</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleOpenProductMaster(false)}
+                    className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 border border-slate-200 rounded-xl transition-all cursor-pointer"
+                    title="제품 Master 관리창 열기 (제품 추가/수정/비활성화)"
+                  >
+                    <Edit3 className="w-3 h-3" />
+                    <span className="hidden sm:inline">Master 관리</span>
+                  </button>
+                  <span className="text-xs text-slate-400 hidden lg:inline">제품 라벨 및 생산 이력 식별 번호</span>
+                </div>
               </div>
+
+              {/* [제품 마스터 연동 배너] */}
+              {matchedProduct ? (
+                <div className="p-3 bg-gradient-to-r from-blue-50/90 via-indigo-50/50 to-slate-50 border border-blue-200 rounded-xl flex items-center justify-between gap-3 flex-wrap animate-in fade-in duration-100">
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <div className="w-8 h-8 rounded-lg bg-blue-600 text-white flex items-center justify-center shrink-0 shadow-xs">
+                      <Package className="w-4 h-4" />
+                    </div>
+                    <div className="min-w-0 text-xs">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="font-bold text-slate-900 truncate">
+                          마스터 연동: <strong className="font-mono text-blue-800">[{matchedProduct.productCode}]</strong> {matchedProduct.productName}
+                        </span>
+                        <span className="px-1.5 py-0.2 rounded text-[10px] font-bold bg-blue-100 text-blue-800 border border-blue-200">
+                          {matchedProduct.productType}
+                        </span>
+                        <span className="text-[11px] text-slate-600">
+                          {matchedProduct.packageType} · {matchedProduct.volume} · {matchedProduct.manufacturer} {matchedProduct.manufactureLine ? `· ${matchedProduct.manufactureLine}` : ""}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    {/* 기존 클레임에서 이름만 매칭된 경우 1클릭 ID 연결 */}
+                    {report.productInfo.productId !== matchedProduct.id && (
+                      <button
+                        type="button"
+                        onClick={() => handleApplyProductFromMaster(matchedProduct)}
+                        className="px-2.5 py-1 text-[11px] font-bold text-emerald-800 bg-emerald-100 hover:bg-emerald-200 border border-emerald-300 rounded-lg transition-all cursor-pointer"
+                        title="기존 클레임의 제품명에 해당하는 정식 Product ID를 연결합니다"
+                      >
+                        마스터 ID 연결
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => handleOpenProductMaster(true)}
+                      className="px-2.5 py-1 text-[11px] font-bold text-blue-700 hover:text-blue-900 bg-white hover:bg-blue-50 border border-blue-200 rounded-lg transition-all cursor-pointer"
+                    >
+                      제품 변경
+                    </button>
+                  </div>
+                </div>
+              ) : report.productInfo.productName ? (
+                <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-600 flex items-center justify-between gap-2 flex-wrap">
+                  <span className="text-[11px]">
+                    입력된 제품명: <strong>{report.productInfo.productName}</strong> (마스터 미등록 또는 미연결 상태)
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => handleOpenProductMaster(true)}
+                    className="text-[11px] font-bold text-blue-600 hover:text-blue-800 underline cursor-pointer"
+                  >
+                    제품 Master에서 찾기 또는 신규 등록 →
+                  </button>
+                </div>
+              ) : null}
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className="sm:col-span-2">
-                <label className="flex items-center gap-1 text-xs font-semibold text-slate-700 mb-1">
-                  <span>제품명 (규격/용량 포함)</span>
-                  <span className="px-1.5 py-0.2 rounded text-[10px] font-black bg-rose-100 text-rose-700 border border-rose-200">
-                    필수
-                  </span>
-                </label>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="flex items-center gap-1 text-xs font-semibold text-slate-700">
+                    <span>제품명 (규격/용량 포함)</span>
+                    <span className="px-1.5 py-0.2 rounded text-[10px] font-black bg-rose-100 text-rose-700 border border-rose-200">
+                      필수
+                    </span>
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => handleOpenProductMaster(true)}
+                    className="text-[11px] font-bold text-blue-600 hover:text-blue-800 inline-flex items-center gap-1 cursor-pointer"
+                  >
+                    <Package className="w-3 h-3" />
+                    <span>Master 검색</span>
+                  </button>
+                </div>
                 <input
                   id="field-product-name"
                   type="text"
                   value={report.productInfo.productName}
                   onChange={(e) => updateProductInfo({ productName: e.target.value })}
-                  placeholder="예: 유기농 프리미엄 콤부차 오리지널 350ml"
+                  placeholder="예: 비타500 100ml 또는 제품 Master에서 선택"
                   className={`w-full text-xs px-3 py-2 border rounded-md focus:outline-none font-medium transition-colors ${getRequiredFieldClass(
                     report.productInfo.productName
                   )}`}
@@ -4559,6 +4863,79 @@ export function InputFormPane({
       )}
     </div>
 
+      {/* ======================================================== */}
+      {/* [하단 고정 액션 바] [다음 필수 입력 →] 스마트 네비게이션 & 저장 */}
+      {/* ======================================================== */}
+      <div className="shrink-0 bg-white border-t border-slate-200/90 px-4 py-2.5 flex flex-wrap items-center justify-between gap-3 shadow-md z-20">
+        {/* 좌측: 이전 단계 버튼 & 현재 단계 안내 */}
+        <div className="flex items-center gap-2">
+          {currentStep !== "basic" && (
+            <button
+              type="button"
+              id="btn-prev-workflow-step"
+              onClick={handlePreviousStep}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-slate-700 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 border border-slate-300 rounded-xl transition-all cursor-pointer shadow-2xs active:scale-95"
+              title="이전 단계로 이동"
+            >
+              <ChevronLeft className="w-3.5 h-3.5" />
+              <span>이전 단계</span>
+            </button>
+          )}
+
+          <div className="flex items-center gap-1.5 pl-1">
+            <span className="text-xs font-bold text-slate-800">
+              {currentStep === "basic" && "Step 1. 기본 접수·제품"}
+              {currentStep === "investigation" && "Step 2. 정밀분석·5대조사"}
+              {currentStep === "cause" && "Step 3. 원인판정·대책"}
+              {currentStep === "conclusion" && "Step 4. 결론·첨부문서"}
+            </span>
+            {nextRequiredAction.stepRemainingCount > 0 ? (
+              <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 border border-amber-300">
+                현재 단계 미작성 {nextRequiredAction.stepRemainingCount}건
+              </span>
+            ) : (
+              <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300 flex items-center gap-1">
+                <Check className="w-3 h-3 stroke-[3]" />
+                <span className="hidden sm:inline">현재 단계 필수 완료</span>
+              </span>
+            )}
+          </div>
+        </div>
+
+        {/* 우측: 스마트 [다음 필수 입력 →] 메인 액션 버튼 */}
+        <div className="flex items-center gap-2.5 ml-auto">
+          {!nextRequiredAction.isAllCompleted && (
+            <span className="hidden md:inline-flex text-[11px] text-slate-500 items-center gap-1">
+              <span>남은 필수 항목:</span>
+              <strong className="text-blue-700 font-bold">{nextRequiredAction.remainingCount}건</strong>
+            </span>
+          )}
+
+          <button
+            type="button"
+            id="btn-next-required-action"
+            onClick={handleNextRequiredNavigation}
+            className={`inline-flex items-center gap-2 px-4 py-2 text-xs font-bold rounded-xl transition-all shadow-sm cursor-pointer active:scale-95 ${
+              nextRequiredAction.isAllCompleted
+                ? "bg-emerald-600 hover:bg-emerald-700 text-white ring-2 ring-emerald-300/60 shadow-emerald-200"
+                : "bg-blue-600 hover:bg-blue-700 text-white ring-2 ring-blue-300/60 shadow-blue-200"
+            }`}
+            title={
+              nextRequiredAction.isAllCompleted
+                ? "모든 필수 항목이 완료되었습니다. 최종 보고서 사전 검증으로 이동합니다."
+                : `다음에 작성해야 할 필수 항목('${nextRequiredAction.actionLabel}')으로 자동 이동합니다.`
+            }
+          >
+            {nextRequiredAction.isAllCompleted ? (
+              <Sparkles className="w-4 h-4 text-emerald-100" />
+            ) : (
+              <ArrowRight className="w-4 h-4 text-blue-100" />
+            )}
+            <span className="text-xs font-black tracking-tight">{nextRequiredAction.buttonText}</span>
+          </button>
+        </div>
+      </div>
+
       {pendingMhtData && (
         <MhtReviewModal
           isOpen={isMhtReviewOpen}
@@ -4576,6 +4953,22 @@ export function InputFormPane({
         onClose={() => setIsFactoryModalOpen(false)}
         currentManufacturer={report.productInfo.manufacturer || ""}
         onApplyProcess={applyFactoryPreset}
+      />
+
+      {/* 과거 클레임 검색 모달 (내부 fallback) */}
+      <PastClaimSearchModal
+        isOpen={isInternalPastClaimOpen}
+        onClose={() => setIsInternalPastClaimOpen(false)}
+        onCopyAsNewClaim={onCopyAsNewClaim}
+      />
+
+      {/* 제품 Master 모달 (내부 fallback) */}
+      <ProductMasterModal
+        isOpen={isInternalProductModalOpen}
+        onClose={() => setIsInternalProductModalOpen(false)}
+        onSelectProduct={handleApplyProductFromMaster}
+        selectedProductId={report.productInfo.productId}
+        isSelectionMode={isInternalProductSelectionMode}
       />
     </div>
   );

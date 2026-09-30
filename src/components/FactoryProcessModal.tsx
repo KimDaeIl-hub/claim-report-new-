@@ -12,6 +12,10 @@ import {
   Trash2,
   AlertTriangle,
   ArrowRight,
+  ShieldCheck,
+  Cpu,
+  Edit3,
+  SlidersHorizontal,
 } from "lucide-react";
 import {
   FactoryProcessPreset,
@@ -20,6 +24,14 @@ import {
   deleteFactoryPreset,
   resetFactoryPresets,
 } from "../data/factoryProcessPresets";
+import { ProcessStepMaster } from "../types";
+import {
+  getProcessStepsByPreset,
+  saveProcessStep,
+  saveAllProcessSteps,
+  loadAllProcessSteps,
+} from "../data/processStepMaster";
+import { ProcessStepDetailModal } from "./ProcessStepDetailModal";
 
 interface FactoryProcessModalProps {
   isOpen: boolean;
@@ -42,6 +54,74 @@ export function FactoryProcessModal({
   const [isCreatingNew, setIsCreatingNew] = useState(false);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+
+  // Structured Process Step Master states
+  const [structuredSteps, setStructuredSteps] = useState<ProcessStepMaster[]>([]);
+  const [selectedStepForDetail, setSelectedStepForDetail] = useState<ProcessStepMaster | null>(null);
+  const [isStepDetailOpen, setIsStepDetailOpen] = useState(false);
+  const [showStructuredTable, setShowStructuredTable] = useState(true);
+
+  // Sync structured steps whenever editingPreset changes
+  useEffect(() => {
+    if (editingPreset) {
+      const steps = getProcessStepsByPreset(editingPreset);
+      setStructuredSteps(steps);
+    } else {
+      setStructuredSteps([]);
+    }
+  }, [editingPreset?.id, editingPreset?.processFlow]);
+
+  const handleOpenStepDetail = (step: ProcessStepMaster) => {
+    setSelectedStepForDetail(step);
+    setIsStepDetailOpen(true);
+  };
+
+  const handleStepUpdated = (updated: ProcessStepMaster) => {
+    const next = structuredSteps.map((s) => (s.id === updated.id ? updated : s));
+    setStructuredSteps(next);
+    // If the step name changed, sync editingPreset.processSteps and processFlow as well
+    if (editingPreset) {
+      const newStepNames = next.map((s) => s.processName);
+      setEditingPreset({
+        ...editingPreset,
+        processSteps: newStepNames,
+        processFlow: newStepNames.join(" → "),
+      });
+    }
+    showToast(`'${updated.processName}' 공정 정보가 갱신되었습니다.`);
+  };
+
+  const handleAddNewStep = () => {
+    if (!editingPreset) return;
+    const nextNumber = structuredSteps.length + 1;
+    const newStep: ProcessStepMaster = {
+      id: `step-${editingPreset.id}-${String(nextNumber).padStart(2, "0")}-${Date.now().toString().slice(-4)}`,
+      presetId: editingPreset.id,
+      manufacturer: editingPreset.name,
+      manufactureLine: editingPreset.teamOrCategory || "표준 생산라인",
+      stepNumber: nextNumber,
+      processName: `신규 공정 ${nextNumber}`,
+      description: `${editingPreset.name}의 ${nextNumber}번째 공정입니다.`,
+      keyEquipment: "자동화 생산 설비",
+      controlPoints: "표준 공정 작업 기준서(SOP) 준수",
+      isCCP: false,
+      qualityRisks: "공정 작업 기준 미준수 리스크",
+      possibleDefects: ["품질 이상"],
+      isActive: true,
+      isCustom: true,
+    };
+    saveProcessStep(newStep);
+    const updatedList = [...structuredSteps, newStep];
+    setStructuredSteps(updatedList);
+    const newStepNames = updatedList.map((s) => s.processName);
+    setEditingPreset({
+      ...editingPreset,
+      processSteps: newStepNames,
+      processFlow: newStepNames.join(" → "),
+    });
+    setSelectedStepForDetail(newStep);
+    setIsStepDetailOpen(true);
+  };
 
   const reloadPresets = (selectPresetId?: string) => {
     const all = loadAllFactoryPresets();
@@ -591,33 +671,190 @@ export function FactoryProcessModal({
                       className="w-full text-xs p-2.5 border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500 font-medium leading-relaxed"
                     />
 
-                    {/* Live Preview of parsed steps */}
-                    <div className="p-2 bg-slate-50 border border-slate-200 rounded-lg">
-                      <div className="flex items-center justify-between mb-1.5">
-                        <span className="text-[11px] text-slate-600 font-bold">
-                          공정 단계 분리 미리보기 ({editingPreset.processSteps?.length || 0}단계):
-                        </span>
-                        <span className="text-[10px] text-slate-400">
-                          화살표 '→' 기준으로 자동 분리되어 단계별 점검에 활용됩니다.
-                        </span>
-                      </div>
-                      <div className="flex flex-wrap gap-1.5">
-                        {editingPreset.processSteps?.map((st, i) => (
-                          <span
-                            key={i}
-                            className="text-[11px] bg-white text-slate-800 px-2 py-0.5 rounded-md border border-slate-300 font-medium shadow-2xs"
-                          >
-                            <span className="text-blue-600 font-bold mr-1">{i + 1}.</span>
-                            {st}
+                    {/* Live Preview of parsed steps with Click-to-Detail */}
+                    <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-2.5">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs text-slate-800 font-bold">
+                            공정 단계 흐름도 시각화 ({structuredSteps.length}단계):
                           </span>
+                          <span className="text-[10px] bg-blue-100 text-blue-800 px-2 py-0.5 rounded-full font-semibold">
+                            공정 클릭 시 상세 조회 / 수정
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setShowStructuredTable(!showStructuredTable)}
+                          className="text-[11px] text-blue-600 hover:text-blue-800 font-semibold flex items-center gap-1 cursor-pointer"
+                        >
+                          <SlidersHorizontal className="w-3 h-3" />
+                          <span>{showStructuredTable ? "공정 Master 테이블 접기 ▴" : "공정 Master 테이블 펼치기 ▾"}</span>
+                        </button>
+                      </div>
+
+                      {/* Interactive Step Pills */}
+                      <div className="flex flex-wrap items-center gap-1.5 p-2 bg-white rounded-lg border border-slate-200 shadow-2xs">
+                        {structuredSteps.map((st, i) => (
+                          <div key={st.id || i} className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => handleOpenStepDetail(st)}
+                              className={`group inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold border transition-all cursor-pointer ${
+                                st.isCCP
+                                  ? "bg-rose-50 hover:bg-rose-100 text-rose-900 border-rose-300 ring-1 ring-rose-200"
+                                  : st.isActive
+                                  ? "bg-slate-50 hover:bg-blue-50 text-slate-800 hover:text-blue-900 border-slate-300 hover:border-blue-400"
+                                  : "bg-slate-100 text-slate-400 border-slate-200 line-through"
+                              }`}
+                              title={`${st.processName} (클릭 시 설비/CCP/품질리스크 상세정보 확인)`}
+                            >
+                              <span className="text-[10px] font-mono font-bold text-blue-600">
+                                {i + 1}.
+                              </span>
+                              <span>{st.processName}</span>
+                              {st.isCCP && (
+                                <span className="text-[9px] font-black bg-rose-600 text-white px-1 py-0.2 rounded">
+                                  {st.ccpNumber || "CCP"}
+                                </span>
+                              )}
+                            </button>
+                            {i < structuredSteps.length - 1 && (
+                              <ArrowRight className="w-3 h-3 text-slate-300 shrink-0" />
+                            )}
+                          </div>
                         ))}
-                        {(!editingPreset.processSteps || editingPreset.processSteps.length === 0) && (
-                          <span className="text-[11px] text-slate-400">
-                            공정 텍스트를 입력하면 단계가 자동 파싱됩니다.
+                        {structuredSteps.length === 0 && (
+                          <span className="text-[11px] text-slate-400 py-1">
+                            공정 텍스트를 입력하면 단계가 자동 파싱 및 구조화 데이터로 변환됩니다.
                           </span>
                         )}
                       </div>
                     </div>
+
+                    {/* [구조화 데이터 관리] 공정 Master 테이블 */}
+                    {showStructuredTable && (
+                      <div className="border border-slate-200 rounded-xl overflow-hidden bg-white shadow-2xs">
+                        <div className="px-3.5 py-2.5 bg-slate-100/80 border-b border-slate-200 flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <Workflow className="w-4 h-4 text-blue-600" />
+                            <span className="text-xs font-bold text-slate-900">
+                              제조공정 구조화 Master 관리 ({structuredSteps.length}개 공정)
+                            </span>
+                            <span className="text-[10px] text-slate-500 hidden sm:inline">
+                              (공정별 고유 ID · 주요 설비 · CCP 여부 · 품질 리스크 데이터)
+                            </span>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={handleAddNewStep}
+                            className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-md transition-colors cursor-pointer"
+                          >
+                            <Plus className="w-3 h-3" />
+                            <span>새 공정 추가</span>
+                          </button>
+                        </div>
+
+                        <div className="overflow-x-auto max-h-64 overflow-y-auto">
+                          <table className="w-full text-left text-xs border-collapse">
+                            <thead>
+                              <tr className="bg-slate-50 border-b border-slate-200 text-[11px] font-semibold text-slate-600">
+                                <th className="py-2 px-2.5 w-12 text-center">순서</th>
+                                <th className="py-2 px-2.5 w-28">공정 ID</th>
+                                <th className="py-2 px-3">공정명</th>
+                                <th className="py-2 px-3">주요 설비</th>
+                                <th className="py-2 px-3">주요 관리항목</th>
+                                <th className="py-2 px-2.5 text-center w-16">CCP</th>
+                                <th className="py-2 px-2.5 text-center w-16">상태</th>
+                                <th className="py-2 px-2.5 text-center w-20">상세</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100">
+                              {structuredSteps.map((st, idx) => (
+                                <tr
+                                  key={st.id || idx}
+                                  className="hover:bg-blue-50/40 transition-colors cursor-pointer group"
+                                  onClick={() => handleOpenStepDetail(st)}
+                                >
+                                  <td className="py-2 px-2.5 text-center font-bold text-slate-500">
+                                    {st.stepNumber || idx + 1}
+                                  </td>
+                                  <td
+                                    className="py-2 px-2.5 font-mono text-[10.5px] text-slate-600 font-semibold truncate max-w-[120px]"
+                                    title={st.id}
+                                  >
+                                    {st.id}
+                                  </td>
+                                  <td className="py-2 px-3 font-bold text-slate-900">
+                                    <div className="flex items-center gap-1.5">
+                                      <span>{st.processName}</span>
+                                      {st.isCustom && (
+                                        <span className="text-[9px] bg-purple-100 text-purple-700 px-1 rounded font-semibold">
+                                          등록
+                                        </span>
+                                      )}
+                                    </div>
+                                  </td>
+                                  <td
+                                    className="py-2 px-3 text-slate-700 truncate max-w-[140px]"
+                                    title={st.keyEquipment}
+                                  >
+                                    {st.keyEquipment || "-"}
+                                  </td>
+                                  <td
+                                    className="py-2 px-3 text-slate-700 truncate max-w-[160px]"
+                                    title={st.controlPoints}
+                                  >
+                                    {st.controlPoints || "-"}
+                                  </td>
+                                  <td className="py-2 px-2.5 text-center">
+                                    {st.isCCP ? (
+                                      <span className="text-[10px] font-black bg-rose-600 text-white px-1.5 py-0.5 rounded shadow-2xs">
+                                        {st.ccpNumber || "CCP"}
+                                      </span>
+                                    ) : (
+                                      <span className="text-slate-300 text-[11px]">-</span>
+                                    )}
+                                  </td>
+                                  <td className="py-2 px-2.5 text-center">
+                                    <span
+                                      className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                                        st.isActive
+                                          ? "bg-emerald-100 text-emerald-800"
+                                          : "bg-slate-100 text-slate-400"
+                                      }`}
+                                    >
+                                      {st.isActive ? "가동" : "비가동"}
+                                    </span>
+                                  </td>
+                                  <td
+                                    className="py-2 px-2.5 text-center"
+                                    onClick={(e) => e.stopPropagation()}
+                                  >
+                                    <button
+                                      type="button"
+                                      onClick={() => handleOpenStepDetail(st)}
+                                      className="px-2 py-0.5 rounded text-[11px] font-semibold text-blue-700 hover:text-white hover:bg-blue-600 border border-blue-300 transition-colors cursor-pointer"
+                                    >
+                                      상세
+                                    </button>
+                                  </td>
+                                </tr>
+                              ))}
+                              {structuredSteps.length === 0 && (
+                                <tr>
+                                  <td
+                                    colSpan={8}
+                                    className="p-4 text-center text-xs text-slate-400"
+                                  >
+                                    등록된 구조화 공정이 없습니다.
+                                  </td>
+                                </tr>
+                              )}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
                   </div>
 
                   {/* 2. Filtration */}
@@ -710,6 +947,14 @@ export function FactoryProcessModal({
           </div>
         </div>
       </div>
+
+      {/* Structured Process Step Detail & Edit Modal */}
+      <ProcessStepDetailModal
+        isOpen={isStepDetailOpen}
+        onClose={() => setIsStepDetailOpen(false)}
+        step={selectedStepForDetail}
+        onStepUpdated={handleStepUpdated}
+      />
     </div>
   );
 }

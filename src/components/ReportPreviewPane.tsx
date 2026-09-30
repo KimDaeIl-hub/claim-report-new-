@@ -17,7 +17,7 @@ import {
   AlertTriangle,
   Edit3,
 } from "lucide-react";
-import { ReportData, PhotoAttachment } from "../types";
+import { ReportData, PhotoAttachment, ProcessStepMaster } from "../types";
 import { maskCustomerName } from "../utils/masking";
 import { getLevel1Number, getLevel2Char } from "../utils/numbering";
 import { KwangdongLogo } from "./KwangdongLogo";
@@ -27,6 +27,8 @@ import {
   getInvestigationStatusBadgeStyle,
   getUnexaminedInvestigationItems,
 } from "../utils/investigationStatus";
+import { loadAllProcessSteps } from "../data/processStepMaster";
+import { ProcessStepDetailModal } from "./ProcessStepDetailModal";
 
 interface ReportPreviewPaneProps {
   report: ReportData;
@@ -49,6 +51,44 @@ export function ReportPreviewPane({
   const [zoomLevel, setZoomLevel] = useState<number>(100);
   const [editingPhotoId, setEditingPhotoId] = useState<string | null>(null);
   const [editingCaptionText, setEditingCaptionText] = useState("");
+
+  // Process Step Detail Modal state
+  const [selectedStepForDetail, setSelectedStepForDetail] = useState<ProcessStepMaster | null>(null);
+  const [isStepDetailOpen, setIsStepDetailOpen] = useState(false);
+
+  const handleStepClick = (stepName: string, stepIdx: number) => {
+    const allSteps = loadAllProcessSteps();
+    const mfg = report.productInfo?.manufacturer || "";
+    let match = allSteps.find(
+      (s) =>
+        (s.processName === stepName || stepName.includes(s.processName) || s.processName.includes(stepName)) &&
+        (mfg ? s.manufacturer.includes(mfg) || mfg.includes(s.manufacturer) : true)
+    );
+    if (!match) {
+      match = allSteps.find(
+        (s) => s.processName === stepName || stepName.includes(s.processName) || s.processName.includes(stepName)
+      );
+    }
+    if (!match) {
+      match = {
+        id: `step-report-${stepIdx + 1}`,
+        stepNumber: stepIdx + 1,
+        manufacturer: report.productInfo?.manufacturer || "광동제약",
+        manufactureLine: report.productInfo?.manufactureLine || "표준 생산라인",
+        processName: stepName,
+        description: `${report.productInfo?.manufacturer || "광동제약"}의 ${stepIdx + 1}번째 제조공정인 '${stepName}' 단계입니다.`,
+        keyEquipment: "표준 제조 자동화 설비",
+        controlPoints: "표준 공정 작업 기준서(SOP) 준수",
+        isCCP: stepName.includes("살균") || stepName.includes("금속") || stepName.includes("UHT"),
+        ccpNumber: stepName.includes("살균") || stepName.includes("UHT") ? "CCP-1B" : stepName.includes("금속") ? "CCP-2P" : undefined,
+        qualityRisks: "공정 관리 기준 준수 및 외래 이물 혼입 차단",
+        possibleDefects: ["품질 이상"],
+        isActive: true,
+      };
+    }
+    setSelectedStepForDetail(match);
+    setIsStepDetailOpen(true);
+  };
 
   const handleSavePhotoCaption = (photoId: string, newCaption: string) => {
     if (!onUpdateReport) return;
@@ -1124,9 +1164,14 @@ export function ReportPreviewPane({
                   {/* Flow Steps Diagram */}
                   {(report.manufacturingProcess.processSteps || []).length > 0 && (
                     <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg">
-                      <span className="text-[11px] font-bold text-slate-700 block mb-2">
-                        [전체 제조공정 흐름도 및 관리 기준점]
-                      </span>
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-[11px] font-bold text-slate-700">
+                          [전체 제조공정 흐름도 및 관리 기준점]
+                        </span>
+                        <span className="text-[10px] text-blue-600 font-semibold hidden print:hidden sm:inline">
+                          (공정 클릭 시 설비·CCP·품질리스크 상세 조회)
+                        </span>
+                      </div>
                       <div className="flex flex-wrap items-center gap-1.5 text-xs">
                         {(report.manufacturingProcess.processSteps || []).map((step, idx) => {
                           const isHighlighted =
@@ -1134,15 +1179,18 @@ export function ReportPreviewPane({
                             step.includes(report.manufacturingProcess.highlightedStep);
                           return (
                             <div key={idx} className="flex items-center gap-1">
-                              <span
-                                className={`px-2.5 py-1 rounded font-medium transition-all ${
+                              <button
+                                type="button"
+                                onClick={() => handleStepClick(step, idx)}
+                                className={`px-2.5 py-1 rounded font-medium transition-all text-left cursor-pointer print:border print:shadow-none ${
                                   isHighlighted
                                     ? "bg-amber-100 text-amber-900 border border-amber-400 font-bold ring-2 ring-amber-300/60"
-                                    : "bg-white text-slate-800 border border-slate-300"
+                                    : "bg-white text-slate-800 border border-slate-300 hover:border-blue-400 hover:bg-blue-50/60"
                                 }`}
+                                title={`${step} (클릭 시 설비/CCP/품질리스크 상세정보 확인)`}
                               >
                                 {step}
-                              </span>
+                              </button>
                               {idx < report.manufacturingProcess.processSteps.length - 1 && (
                                 <span className="text-slate-400 font-bold">→</span>
                               )}
@@ -1566,6 +1614,13 @@ export function ReportPreviewPane({
           </div>
         </div>
       </div>
+
+      {/* Structured Process Step Detail Modal */}
+      <ProcessStepDetailModal
+        isOpen={isStepDetailOpen}
+        onClose={() => setIsStepDetailOpen(false)}
+        step={selectedStepForDetail}
+      />
     </div>
   );
 }
