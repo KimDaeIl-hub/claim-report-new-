@@ -9,6 +9,28 @@ export const PRODUCT_MASTER_STORAGE_KEY = "kwangdong_product_master_v1";
  */
 export const DEFAULT_PRODUCT_MASTERS: ProductMaster[] = [
   {
+    id: "prod-vita-a",
+    productName: "비타민 음료 A",
+    productCode: "KD-VIT-A01",
+    productType: "혼합음료",
+    subProductType: "비타민 음료",
+    volume: "100ml",
+    packageType: "유리병",
+    containerType: "갈색 유리병 100ml",
+    manufacturerId: "mfg-kd-pyeongtaek",
+    manufacturer: "광동제약 평택공장",
+    manufactureLineId: "line-kd-pt-01",
+    manufactureLine: "A Line",
+    isActive: true,
+    description: "광동제약 평택공장 A Line 생산 대표 비타민 음료 (A Line 9단계 표준 공정)",
+    primaryClaimTypes: ["검은색 이물", "유리 파손/이물", "변질/산패", "캡 흠집/탄화"],
+    relatedProcessPresetId: "line-kd-pt-01",
+    relatedProcessName: "광동제약 평택공장 A Line 제조공정",
+    notes: "A Line 9단계 공정 (원료 투입 → 배합 → 여과 → UHT → 저장 → 충전 → 캡핑 → 후살균 → 포장)",
+    createdAt: "2026-01-01",
+    updatedAt: "2026-03-30",
+  },
+  {
     id: "prod-vita500-100",
     productName: "비타500 100ml",
     productCode: "KD-VIT-001",
@@ -285,6 +307,13 @@ export function loadAllProducts(): ProductMaster[] {
     }
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed) && parsed.length > 0) {
+      const existingIds = new Set(parsed.map((p: any) => p.id));
+      const missingDefaults = DEFAULT_PRODUCT_MASTERS.filter((p) => !existingIds.has(p.id));
+      if (missingDefaults.length > 0) {
+        const merged = [...parsed, ...missingDefaults];
+        localStorage.setItem(PRODUCT_MASTER_STORAGE_KEY, JSON.stringify(merged));
+        return merged.map(resolveProductManufacturerAndLine);
+      }
       return parsed.map(resolveProductManufacturerAndLine);
     }
     return DEFAULT_PRODUCT_MASTERS;
@@ -293,6 +322,8 @@ export function loadAllProducts(): ProductMaster[] {
     return DEFAULT_PRODUCT_MASTERS;
   }
 }
+
+export const loadAllProductMasters = loadAllProducts;
 
 /**
  * 전체 제품 마스터 저장하기

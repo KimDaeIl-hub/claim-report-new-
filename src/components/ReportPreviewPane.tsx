@@ -37,6 +37,7 @@ interface ReportPreviewPaneProps {
   onPrint: () => void;
   onSwitchToForm?: () => void;
   onSwitchToEmail?: () => void;
+  onOpenCompleteKnowledge?: () => void;
   onUpdateReport?: (updated: ReportData) => void;
 }
 
@@ -46,6 +47,7 @@ export function ReportPreviewPane({
   onPrint,
   onSwitchToForm,
   onSwitchToEmail,
+  onOpenCompleteKnowledge,
   onUpdateReport,
 }: ReportPreviewPaneProps) {
   const [zoomLevel, setZoomLevel] = useState<number>(100);
@@ -377,6 +379,19 @@ export function ReportPreviewPane({
         </div>
 
         <div className="flex items-center gap-2">
+          {onOpenCompleteKnowledge && (
+            <button
+              type="button"
+              id="btn-preview-complete-knowledge"
+              onClick={onOpenCompleteKnowledge}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-black text-white bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 border border-emerald-400 rounded-lg shadow-2xs transition-all active:scale-95 cursor-pointer"
+              title="조사 완료 및 향후 유사사례 검색에 활용할 수 있도록 Knowledge 데이터로 연결"
+            >
+              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-200" />
+              <span>클레임 완료 & 지식화</span>
+            </button>
+          )}
+
           <button
             type="button"
             id="btn-email-reply"

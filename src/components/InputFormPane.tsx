@@ -20,6 +20,7 @@ import {
   Upload,
   CheckCircle2,
   AlertCircle,
+  Database,
   X,
   AlertTriangle,
   Info,
@@ -35,15 +36,19 @@ import {
   ChevronLeft,
   Copy,
   Edit3,
+  Zap,
 } from "lucide-react";
-import { ReportData, PhysicochemicalItem, AdditionalTestItem, ClaimPreset, InvestigationStatus, InvestigationItemSelection, InvestigationResultsData, ProductMaster } from "../types";
+import { ReportData, PhysicochemicalItem, AdditionalTestItem, ClaimPreset, InvestigationStatus, InvestigationItemSelection, InvestigationResultsData, ProductMaster, ProcessStepMaster } from "../types";
 import { getAllPresets } from "../data/presets";
 import { findProductById, findProductByName } from "../data/productMaster";
+import { loadAllProcessSteps } from "../data/processStepMaster";
 import { ProductMasterModal } from "./ProductMasterModal";
+import { ProcessStepDetailModal } from "./ProcessStepDetailModal";
 import { parseMhtFile, ParsedMhtClaimData } from "../utils/mhtParser";
 import { mergePresetData, isUserPhoto } from "../utils/storage";
 import { AiPolishButton } from "./AiPolishButton";
 import { PhraseDropdown } from "./PhraseDropdown";
+import { SituationPhraseRecommendationCard } from "./SituationPhraseRecommendationCard";
 import { PhotoUploadField } from "./PhotoUploadField";
 import { TestPrincipleBox } from "./TestPrincipleBox";
 import { CompanyLogoUploader } from "./CompanyLogoUploader";
@@ -81,6 +86,10 @@ import {
 import { InvestigationProgressTracker } from "./InvestigationProgressTracker";
 import { ProgressItem, ChecklistStatus, calculateReportProgress } from "../utils/progressTracker";
 import { getNextRequiredAction, WorkflowStepId } from "../utils/requiredFieldsManager";
+import { SimilarClaimRecommendationCard } from "./SimilarClaimRecommendationCard";
+import { MethodImportOptions } from "./ImportInvestigationMethodModal";
+import { SimilarClaimRecommendation, CurrentClaimContext } from "../utils/similarClaimRecommender";
+import { applyInvestigationStructureToReport } from "../utils/investigationStructureImporter";
 
 interface InputFormPaneProps {
   report: ReportData;
@@ -91,7 +100,10 @@ interface InputFormPaneProps {
   onOpenValidation?: () => void;
   onOpenPastClaims?: () => void;
   onCopyAsNewClaim?: (newReport: ReportData) => void;
+  onUseAsInvestigationPackage?: (pastReport: ReportData) => void;
   onOpenProductMaster?: (selectionMode?: boolean) => void;
+  onOpenPackageModal?: () => void;
+  onOpenCompleteKnowledge?: () => void;
   activeSectionId?: string;
   activeTab?: string;
   onTabChange?: (tab: string) => void;
@@ -106,7 +118,10 @@ export function InputFormPane({
   onOpenValidation,
   onOpenPastClaims,
   onCopyAsNewClaim,
+  onUseAsInvestigationPackage: propOnUseAsInvestigationPackage,
   onOpenProductMaster,
+  onOpenPackageModal,
+  onOpenCompleteKnowledge,
   activeSectionId,
   activeTab: propActiveTab,
   onTabChange,
@@ -176,6 +191,57 @@ export function InputFormPane({
   const [selectedPresetId, setSelectedPresetId] = useState<string | null>(null);
   const [selectedClaimTypes, setSelectedClaimTypes] = useState<ClaimTypeCategory[]>(["foreign"]);
   const [showAllAnalysisItems, setShowAllAnalysisItems] = useState<boolean>(false);
+
+  // 상황 기반 상용구 자동 추천을 위한 클레임 유형 및 제품 유형
+  const activeClaimTypeKorean = useMemo(() => {
+    const cat = selectedClaimTypes[0] || "foreign";
+    if (cat === "foreign") return "이물";
+    if (cat === "spoilage") return "변질";
+    if (cat === "leak") return "누액";
+    if (cat === "label") return "표시오류";
+    if (cat === "volume") return "내용량";
+    return "이물";
+  }, [selectedClaimTypes]);
+
+  const activeProductType = report.productInfo?.subProductType || "혼합음료";
+
+  // Process Step Detail Modal state in InputFormPane
+  const [selectedFormStep, setSelectedFormStep] = useState<ProcessStepMaster | null>(null);
+  const [isFormStepModalOpen, setIsFormStepModalOpen] = useState(false);
+
+  const handleOpenFormStepDetail = (stepName: string, stepIdx: number) => {
+    const allSteps = loadAllProcessSteps();
+    const mfg = report.productInfo?.manufacturer || "";
+    let match = allSteps.find(
+      (s) =>
+        (s.processName === stepName || stepName.includes(s.processName) || s.processName.includes(stepName)) &&
+        (mfg ? s.manufacturer.includes(mfg) || mfg.includes(s.manufacturer) : true)
+    );
+    if (!match) {
+      match = allSteps.find(
+        (s) => s.processName === stepName || stepName.includes(s.processName) || s.processName.includes(stepName)
+      );
+    }
+    if (!match) {
+      match = {
+        id: `step-form-${stepIdx + 1}`,
+        stepNumber: stepIdx + 1,
+        manufacturer: report.productInfo?.manufacturer || "광동제약",
+        manufactureLine: report.productInfo?.manufactureLine || "표준 생산라인",
+        processName: stepName,
+        description: `${report.productInfo?.manufacturer || "광동제약"}의 ${stepIdx + 1}번째 제조공정인 '${stepName}' 단계입니다.`,
+        keyEquipment: "표준 제조 설비",
+        controlPoints: "표준 작업 기준서(SOP) 준수",
+        isCCP: stepName.includes("살균") || stepName.includes("금속") || stepName.includes("UHT"),
+        ccpNumber: stepName.includes("살균") || stepName.includes("UHT") ? "CCP-1B" : stepName.includes("금속") ? "CCP-2P" : undefined,
+        qualityRisks: "공정 관리 기준 준수 및 외래 이물 혼입 차단",
+        possibleDefects: ["품질 이상"],
+        isActive: true,
+      };
+    }
+    setSelectedFormStep(match);
+    setIsFormStepModalOpen(true);
+  };
   const [isChecklistModalOpen, setIsChecklistModalOpen] = useState<boolean>(false);
   const [isConfigDrawerOpen, setIsConfigDrawerOpen] = useState<boolean>(false);
   const [isStep1TypePresetOpen, setIsStep1TypePresetOpen] = useState<boolean>(false);
@@ -191,6 +257,119 @@ export function InputFormPane({
   const [isFactoryModalOpen, setIsFactoryModalOpen] = useState(false);
   const [factoryToast, setFactoryToast] = useState<string | null>(null);
   const [factoryPresets, setFactoryPresets] = useState<FactoryProcessPreset[]>(() => loadAllFactoryPresets());
+
+  // 과거 유사 클레임 11대 구조적 유사도 컨텍스트
+  const currentClaimContext: CurrentClaimContext = useMemo(() => {
+    return {
+      productName: report.productInfo.productName,
+      productType: report.productInfo.packageType?.includes("PET")
+        ? "다류(액상차)"
+        : report.productInfo.productName?.includes("차")
+        ? "다류(액상차)"
+        : "혼합음료",
+      claimMajorCategory: report.customerClaim.claimType || selectedClaimTypes[0] || "이물",
+      claimMidCategory: selectedClaimTypes.join(", ") || report.customerClaim.claimType || "검은색 이물",
+      claimDetailType: report.customerClaim.claimDetails,
+      manufactureLine: report.productInfo.manufactureLine || report.productInfo.manufacturer,
+      manufacturer: report.productInfo.manufacturer,
+      relatedProcess: report.manufacturingProcess.highlightedStep || report.manufacturingProcess.processSteps?.[0],
+      foreignMatterFeatures: `${report.analysisResults.visualInspection.foreignObjectAppearance || ""} ${report.analysisResults.visualInspection.sampleCondition || ""}`,
+      customerClaimDetails: report.customerClaim.claimDetails,
+      lotNumber: report.productInfo.lotNumber,
+    };
+  }, [
+    report.productInfo.productName,
+    report.productInfo.packageType,
+    report.productInfo.manufactureLine,
+    report.productInfo.manufacturer,
+    report.productInfo.lotNumber,
+    report.customerClaim.claimType,
+    report.customerClaim.claimDetails,
+    selectedClaimTypes,
+    report.manufacturingProcess.highlightedStep,
+    report.manufacturingProcess.processSteps,
+    report.analysisResults.visualInspection.foreignObjectAppearance,
+    report.analysisResults.visualInspection.sampleCondition,
+  ]);
+
+  // 과거 유사 사례의 조사방법 안전 적용 핸들러 (원인/결론은 복사하지 않음)
+  const handleApplySimilarClaimMethods = (
+    options: MethodImportOptions,
+    rec: SimilarClaimRecommendation
+  ) => {
+    const source = rec.pastClaim.report;
+
+    // 1. 과학 분석 항목 활성화 (FT-IR, 광학 현미경 등)
+    if (options.enableAnalysisMethods) {
+      const updatedAnalysis = { ...report.analysisResults };
+      if (!source.analysisResults.ftirAnalysis?.skipped) {
+        updatedAnalysis.ftirAnalysis = {
+          ...updatedAnalysis.ftirAnalysis,
+          skipped: false,
+          includePrinciple: true,
+          principleText:
+            options.applyTestPrinciples && source.analysisResults.ftirAnalysis?.principleText
+              ? source.analysisResults.ftirAnalysis.principleText
+              : updatedAnalysis.ftirAnalysis.principleText,
+        };
+      }
+      if (!source.analysisResults.opticalMicroscope?.skipped) {
+        updatedAnalysis.opticalMicroscope = {
+          ...updatedAnalysis.opticalMicroscope,
+          skipped: false,
+          includePrinciple: true,
+          magnification: source.analysisResults.opticalMicroscope?.magnification || "100x",
+          principleText:
+            options.applyTestPrinciples && source.analysisResults.opticalMicroscope?.principleText
+              ? source.analysisResults.opticalMicroscope.principleText
+              : updatedAnalysis.opticalMicroscope.principleText,
+        };
+      }
+      if (!source.analysisResults.magnifierInspection?.skipped) {
+        updatedAnalysis.magnifierInspection = {
+          ...updatedAnalysis.magnifierInspection,
+          skipped: false,
+          includePrinciple: true,
+          magnification: source.analysisResults.magnifierInspection?.magnification || "30x",
+        };
+      }
+      updateAnalysisResults(updatedAnalysis);
+    }
+
+    // 2. 공정 중점 관리 기준 적용 (원인 판정은 복사하지 않음)
+    if (options.applyProcessCheckpoints) {
+      updateManufacturingProcess({
+        criticalControlPoint:
+          source.manufacturingProcess?.criticalControlPoint ||
+          report.manufacturingProcess.criticalControlPoint,
+        filtrationAnalysis:
+          source.manufacturingProcess?.filtrationAnalysis ||
+          report.manufacturingProcess.filtrationAnalysis,
+        cleaningAnalysis:
+          source.manufacturingProcess?.cleaningAnalysis ||
+          report.manufacturingProcess.cleaningAnalysis,
+      });
+    }
+
+    setFactoryToast(
+      `과거 유사 사례(${rec.productName} - ${rec.claimSummary})의 조사방법 및 항목 구성이 적용되었습니다. (원인 및 결론은 복사되지 않음)`
+    );
+    setTimeout(() => setFactoryToast(null), 3500);
+  };
+
+  // 과거 사례에서 조사 구조(항목, 순서, 방법, 공정, 상용구) 가져오기 핸들러
+  const handleUseAsInvestigationPackage = (pastReport: ReportData) => {
+    if (propOnUseAsInvestigationPackage) {
+      propOnUseAsInvestigationPackage(pastReport);
+    } else {
+      const updated = applyInvestigationStructureToReport(report, pastReport);
+      onChange(updated);
+      setFactoryToast(
+        `'${pastReport.productInfo.productName || pastReport.title || "과거 사례"}'의 조사 구조(항목, 방법, 공정, 상용구)가 적용되었습니다. 실제 결과는 새로 입력해주세요.`
+      );
+      setTimeout(() => setFactoryToast(null), 4000);
+    }
+  };
 
   useEffect(() => {
     const handlePresetsChange = (e: Event) => {
@@ -1359,6 +1538,40 @@ export function InputFormPane({
           isModalOpen={isChecklistModalOpen}
           onCloseModal={() => setIsChecklistModalOpen(false)}
         />
+
+        {/* 조사 패키지 자동 구성 Quick-Start Banner */}
+        {onOpenPackageModal && (
+          <div className="p-3.5 bg-gradient-to-r from-amber-50 via-orange-50 to-amber-100/70 border border-amber-300 rounded-2xl shadow-2xs flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-amber-400 to-orange-500 text-slate-950 flex items-center justify-center font-black shadow-xs shrink-0">
+                <Zap className="w-4 h-4 fill-slate-950 text-slate-950" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-black text-slate-900">
+                    신규 클레임 조사 패키지 자동 구성
+                  </span>
+                  <span className="text-[10px] font-bold bg-amber-200 text-amber-900 px-1.5 py-0.2 rounded border border-amber-300">
+                    핵심 기능
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-600">
+                  제품 + 제조번호 + 클레임 유형을 입력하면 Master 기준정보와 8대 조사 항목을 실시간 자동 구성합니다.
+                </p>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              id="btn-form-open-package-modal"
+              onClick={onOpenPackageModal}
+              className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2 text-xs font-black text-slate-950 bg-gradient-to-r from-amber-400 via-amber-300 to-yellow-400 hover:from-amber-300 hover:to-yellow-300 border border-amber-400 rounded-xl transition-all shadow-xs active:scale-95 cursor-pointer shrink-0"
+            >
+              <Zap className="w-3.5 h-3.5 fill-slate-950 text-slate-950" />
+              <span>조사 패키지 자동 구성 시작 ➜</span>
+            </button>
+          </div>
+        )}
         {/* ======================================================== */}
         {/* [Step 1] 기본정보 (1. 클레임 접수 + 2. 대상 제품 정보 통합) */}
         {/* ======================================================== */}
@@ -2218,6 +2431,17 @@ export function InputFormPane({
               </div>
             </div>
             </div>
+
+            {/* 과거 유사 클레임 11대 항목 구조적 유사도 자동 추천 카드 */}
+            <div id="section-similar-claim-recommendations">
+              <SimilarClaimRecommendationCard
+                context={currentClaimContext}
+                currentReport={report}
+                onApplyMethods={handleApplySimilarClaimMethods}
+                onUseAsInvestigationPackage={handleUseAsInvestigationPackage}
+                onOpenManualSearch={handleOpenPastClaims}
+              />
+            </div>
           </div>
         )}
 
@@ -2362,10 +2586,61 @@ export function InputFormPane({
                       }
                       itemLabel="현품 육안 확인"
                     />
+
+                    {/* 현품 육안확인 상황 기반 자동 추천 상용구 카드 */}
+                    <SituationPhraseRecommendationCard
+                      context={{
+                        claimType: report.customerClaim?.claimType || "이물",
+                        investigationItem: "현품",
+                        resultType:
+                          report.analysisResults.visualInspection.status === "이상 확인"
+                            ? "이상 확인"
+                            : "이상 없음",
+                        usageLocation: "분석 내용",
+                        relatedProductType: report.productInfo?.productType || "혼합음료",
+                      }}
+                      currentValue={report.analysisResults.visualInspection.sampleCondition}
+                      onApplySentence={(sentence) =>
+                        updateAnalysisResults({
+                          visualInspection: {
+                            ...report.analysisResults.visualInspection,
+                            sampleCondition: sentence,
+                          },
+                        })
+                      }
+                      onOpenPhraseManager={onOpenPhraseManager}
+                      fieldKey="sampleCondition"
+                    />
+
                     <div>
-                      <label className="block text-xs font-semibold text-slate-700 mb-1">
-                        외관 성상 및 잔여량 특이사항
-                      </label>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="block text-xs font-semibold text-slate-700">
+                          외관 성상 및 잔여량 특이사항
+                        </label>
+                        <PhraseDropdown
+                          fieldKey="sampleCondition"
+                          activePresetId={selectedPresetId || undefined}
+                          situationContext={{
+                            claimType: report.customerClaim?.claimType || "이물",
+                            investigationItem: "현품",
+                            resultType:
+                              report.analysisResults.visualInspection.status === "이상 확인"
+                                ? "이상 확인"
+                                : "이상 없음",
+                            usageLocation: "분석 내용",
+                            relatedProductType: report.productInfo?.productType || "혼합음료",
+                          }}
+                          onSelectPhrase={(content) =>
+                            updateAnalysisResults({
+                              visualInspection: {
+                                ...report.analysisResults.visualInspection,
+                                sampleCondition: content,
+                              },
+                            })
+                          }
+                          onOpenManager={onOpenPhraseManager}
+                        />
+                      </div>
                       <textarea
                         id="field-visual-sample-condition"
                         rows={2}
@@ -3891,6 +4166,46 @@ export function InputFormPane({
                     placeholder="예: 원료 배합 → 150mesh 여과 → 순간 살균 → 병 세척 → 충진/밀봉 → 검사 → 포장"
                     className="w-full text-xs px-3 py-2 border border-slate-300 rounded-md focus:ring-1 focus:ring-blue-500 focus:outline-none"
                   />
+                  {/* Interactive Process Step Pills in InputFormPane */}
+                  {(report.manufacturingProcess.processSteps || []).length > 0 && (
+                    <div className="mt-2 p-2.5 bg-slate-50 border border-slate-200 rounded-lg space-y-1.5">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-bold text-slate-700">
+                          공정 단계 시각화 ({(report.manufacturingProcess.processSteps || []).length}단계):
+                        </span>
+                        <span className="text-[10px] text-blue-600 font-semibold">
+                          공정 클릭 시 설비·관리항목·CCP 상세 확인
+                        </span>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        {(report.manufacturingProcess.processSteps || []).map((step, idx) => {
+                          const isHighlighted =
+                            report.manufacturingProcess.highlightedStep &&
+                            step.includes(report.manufacturingProcess.highlightedStep);
+                          return (
+                            <div key={idx} className="flex items-center gap-1">
+                              <button
+                                type="button"
+                                onClick={() => handleOpenFormStepDetail(step, idx)}
+                                className={`px-2 py-0.5 rounded text-xs font-semibold border transition-all cursor-pointer ${
+                                  isHighlighted
+                                    ? "bg-amber-100 text-amber-900 border-amber-400 font-bold ring-1 ring-amber-300"
+                                    : "bg-white text-slate-800 border-slate-300 hover:border-blue-400 hover:bg-blue-50"
+                                }`}
+                                title={`${step} (클릭 시 설비/관리항목/CCP 상세정보 확인)`}
+                              >
+                                <span className="text-[10px] font-mono text-blue-600 mr-1">{idx + 1}.</span>
+                                <span>{step}</span>
+                              </button>
+                              {idx < (report.manufacturingProcess.processSteps || []).length - 1 && (
+                                <span className="text-slate-300 text-xs">→</span>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 <div>
@@ -3917,6 +4232,14 @@ export function InputFormPane({
                       <PhraseDropdown
                         fieldKey="filtrationAnalysis"
                         activePresetId={selectedPresetId || undefined}
+                        situationContext={{
+                          claimType: report.customerClaim?.claimType || "이물",
+                          investigationItem: "제조공정",
+                          resultType: report.manufacturingProcess.filtrationStatus === "이상 확인" ? "이상 확인" : "이상 없음",
+                          usageLocation: "여과망 관리",
+                          relatedProcess: "여과",
+                          relatedProductType: report.productInfo?.productType || "혼합음료",
+                        }}
                         onSelectPhrase={(content) =>
                           updateManufacturingProcess({ filtrationAnalysis: content })
                         }
@@ -3951,6 +4274,14 @@ export function InputFormPane({
                       <PhraseDropdown
                         fieldKey="cleaningAnalysis"
                         activePresetId={selectedPresetId || undefined}
+                        situationContext={{
+                          claimType: report.customerClaim?.claimType || "이물",
+                          investigationItem: "제조공정",
+                          resultType: report.manufacturingProcess.cleaningStatus === "이상 확인" ? "이상 확인" : "이상 없음",
+                          usageLocation: "세척 공정",
+                          relatedProcess: "세척",
+                          relatedProductType: report.productInfo?.productType || "혼합음료",
+                        }}
                         onSelectPhrase={(content) =>
                           updateManufacturingProcess({ cleaningAnalysis: content })
                         }
@@ -4071,6 +4402,18 @@ export function InputFormPane({
                       <PhraseDropdown
                         fieldKey="productionLogNote"
                         activePresetId={selectedPresetId || undefined}
+                        situationContext={{
+                          claimType: activeClaimTypeKorean,
+                          investigationItem: "제조기록",
+                          resultType:
+                            getInvestigationValue("manufacturingRecord") === "normal" || getInvestigationValue("manufacturingRecord") === "no_issue"
+                              ? "이상 없음"
+                              : getInvestigationValue("manufacturingRecord")
+                              ? getChoiceOptionLabel("manufacturingRecord", getInvestigationValue("manufacturingRecord"))
+                              : report.lotHistory.productionLogStatus || "이상 없음",
+                          usageLocation: "제조기록 점검",
+                          relatedProductType: activeProductType,
+                        }}
                         onSelectPhrase={(content) =>
                           updateLotHistory({ productionLogNote: content })
                         }
@@ -4128,6 +4471,28 @@ export function InputFormPane({
                     );
                   })()}
 
+                  {/* 상황 기반 자동 추천 상용구 카드 */}
+                  <SituationPhraseRecommendationCard
+                    context={{
+                      claimType: report.customerClaim?.claimType || "이물",
+                      investigationItem: "제조기록",
+                      resultType:
+                        getInvestigationValue("manufacturingRecord") === "normal" || getInvestigationValue("manufacturingRecord") === "no_issue"
+                          ? "이상 없음"
+                          : getInvestigationValue("manufacturingRecord")
+                          ? getChoiceOptionLabel("manufacturingRecord", getInvestigationValue("manufacturingRecord"))
+                          : report.lotHistory.productionLogStatus || "이상 없음",
+                      usageLocation: "제조기록 점검",
+                      relatedProductType: report.productInfo?.productType || "혼합음료",
+                    }}
+                    currentValue={report.lotHistory.productionLogNote}
+                    onApplySentence={(sentence) =>
+                      updateLotHistory({ productionLogNote: sentence })
+                    }
+                    onOpenPhraseManager={onOpenPhraseManager}
+                    fieldKey="productionLogNote"
+                  />
+
                   <div className="mt-2 mb-3">
                     <label className="block text-[11px] font-semibold text-slate-700 mb-1">
                       제조기록 조사 내용 (자유 수정 가능)
@@ -4152,6 +4517,18 @@ export function InputFormPane({
                     <PhraseDropdown
                       fieldKey="qualityTestRecord"
                       activePresetId={selectedPresetId || undefined}
+                      situationContext={{
+                        claimType: report.customerClaim?.claimType || "이물",
+                        investigationItem: "품질검사",
+                        resultType:
+                          getInvestigationValue("qualityInspection") === "pass" || getInvestigationValue("qualityInspection") === "normal"
+                            ? "적합"
+                            : getInvestigationValue("qualityInspection")
+                            ? getChoiceOptionLabel("qualityInspection", getInvestigationValue("qualityInspection"))
+                            : report.lotHistory.qualityTestStatus || "적합",
+                        usageLocation: "품질검사",
+                        relatedProductType: report.productInfo?.productType || "혼합음료",
+                      }}
                       onSelectPhrase={(content) =>
                         updateLotHistory({ qualityTestRecord: content })
                       }
@@ -4202,6 +4579,28 @@ export function InputFormPane({
                     );
                   })()}
 
+                  {/* 상황 기반 자동 추천 상용구 카드 */}
+                  <SituationPhraseRecommendationCard
+                    context={{
+                      claimType: report.customerClaim?.claimType || "이물",
+                      investigationItem: "품질검사",
+                      resultType:
+                        getInvestigationValue("qualityInspection") === "pass" || getInvestigationValue("qualityInspection") === "normal"
+                          ? "적합"
+                          : getInvestigationValue("qualityInspection")
+                          ? getChoiceOptionLabel("qualityInspection", getInvestigationValue("qualityInspection"))
+                          : report.lotHistory.qualityTestStatus || "적합",
+                      usageLocation: "품질검사",
+                      relatedProductType: report.productInfo?.productType || "혼합음료",
+                    }}
+                    currentValue={report.lotHistory.qualityTestRecord}
+                    onApplySentence={(sentence) =>
+                      updateLotHistory({ qualityTestRecord: sentence })
+                    }
+                    onOpenPhraseManager={onOpenPhraseManager}
+                    fieldKey="qualityTestRecord"
+                  />
+
                   <div className="mt-2 mb-3">
                     <label className="block text-[11px] font-semibold text-slate-700 mb-1">
                       품질검사 결과 내용 (자유 수정 가능)
@@ -4251,6 +4650,18 @@ export function InputFormPane({
                       <PhraseDropdown
                         fieldKey="retainedSampleCheck"
                         activePresetId={selectedPresetId || undefined}
+                        situationContext={{
+                          claimType: report.customerClaim?.claimType || "이물",
+                          investigationItem: "보관품",
+                          resultType:
+                            getInvestigationValue("retainedSample") === "normal"
+                              ? "이상 없음"
+                              : getInvestigationValue("retainedSample")
+                              ? getChoiceOptionLabel("retainedSample", getInvestigationValue("retainedSample"))
+                              : report.lotHistory.retainedSampleStatus || "이상 없음",
+                          usageLocation: "분석 내용",
+                          relatedProductType: report.productInfo?.productType || "혼합음료",
+                        }}
                         onSelectPhrase={(content) =>
                           updateLotHistory({ retainedSampleCheck: content })
                         }
@@ -4308,6 +4719,28 @@ export function InputFormPane({
                     );
                   })()}
 
+                  {/* 상황 기반 자동 추천 상용구 카드 */}
+                  <SituationPhraseRecommendationCard
+                    context={{
+                      claimType: report.customerClaim?.claimType || "이물",
+                      investigationItem: "보관품",
+                      resultType:
+                        getInvestigationValue("retainedSample") === "normal"
+                          ? "이상 없음"
+                          : getInvestigationValue("retainedSample")
+                          ? getChoiceOptionLabel("retainedSample", getInvestigationValue("retainedSample"))
+                          : report.lotHistory.retainedSampleStatus || "이상 없음",
+                      usageLocation: "분석 내용",
+                      relatedProductType: report.productInfo?.productType || "혼합음료",
+                    }}
+                    currentValue={report.lotHistory.retainedSampleCheck}
+                    onApplySentence={(sentence) =>
+                      updateLotHistory({ retainedSampleCheck: sentence })
+                    }
+                    onOpenPhraseManager={onOpenPhraseManager}
+                    fieldKey="retainedSampleCheck"
+                  />
+
                   <div className="mt-2 mb-3">
                     <label className="block text-[11px] font-semibold text-slate-700 mb-1">
                       보관품 조사 내용 (자유 수정 가능)
@@ -4344,6 +4777,18 @@ export function InputFormPane({
                       <PhraseDropdown
                         fieldKey="rawMaterialCheck"
                         activePresetId={selectedPresetId || undefined}
+                        situationContext={{
+                          claimType: report.customerClaim?.claimType || "이물",
+                          investigationItem: "원부자재",
+                          resultType:
+                            getInvestigationValue("rawMaterial") === "normal" || getInvestigationValue("rawMaterial") === "no_issue"
+                              ? "이상 없음"
+                              : getInvestigationValue("rawMaterial")
+                              ? getChoiceOptionLabel("rawMaterial", getInvestigationValue("rawMaterial"))
+                              : report.lotHistory.rawMaterialStatus || "이상 없음",
+                          usageLocation: "분석 내용",
+                          relatedProductType: report.productInfo?.productType || "혼합음료",
+                        }}
                         onSelectPhrase={(content) =>
                           updateLotHistory({ rawMaterialCheck: content })
                         }
@@ -4400,6 +4845,28 @@ export function InputFormPane({
                       />
                     );
                   })()}
+
+                  {/* 상황 기반 자동 추천 상용구 카드 */}
+                  <SituationPhraseRecommendationCard
+                    context={{
+                      claimType: report.customerClaim?.claimType || "이물",
+                      investigationItem: "원부자재",
+                      resultType:
+                        getInvestigationValue("rawMaterial") === "normal" || getInvestigationValue("rawMaterial") === "no_issue"
+                          ? "이상 없음"
+                          : getInvestigationValue("rawMaterial")
+                          ? getChoiceOptionLabel("rawMaterial", getInvestigationValue("rawMaterial"))
+                          : report.lotHistory.rawMaterialStatus || "이상 없음",
+                      usageLocation: "분석 내용",
+                      relatedProductType: report.productInfo?.productType || "혼합음료",
+                    }}
+                    currentValue={report.lotHistory.rawMaterialCheck || ""}
+                    onApplySentence={(sentence) =>
+                      updateLotHistory({ rawMaterialCheck: sentence })
+                    }
+                    onOpenPhraseManager={onOpenPhraseManager}
+                    fieldKey="rawMaterialCheck"
+                  />
 
                   <div className="mt-2 mb-3">
                     <label className="block text-[11px] font-semibold text-slate-700 mb-1">
@@ -4480,6 +4947,13 @@ export function InputFormPane({
                       <PhraseDropdown
                         fieldKey="rootCause"
                         activePresetId={selectedPresetId || undefined}
+                        situationContext={{
+                          claimType: report.customerClaim?.claimType || "이물",
+                          investigationItem: "원인판정",
+                          resultType: report.rootCauseAndActions.status || "이상 확인",
+                          usageLocation: "원인 분석",
+                          relatedProductType: report.productInfo?.productType || "혼합음료",
+                        }}
                         onSelectPhrase={(content) => updateRootCause({ rootCause: content })}
                         onOpenManager={onOpenPhraseManager}
                       />
@@ -4498,6 +4972,24 @@ export function InputFormPane({
                       itemLabel="종합 원인 판정"
                     />
                   </div>
+
+                  {/* 상황 기반 자동 추천 상용구 카드 */}
+                  <SituationPhraseRecommendationCard
+                    context={{
+                      claimType: report.customerClaim?.claimType || "이물",
+                      investigationItem: "원인판정",
+                      resultType: report.rootCauseAndActions.status || "이상 확인",
+                      usageLocation: "원인 분석",
+                      relatedProductType: report.productInfo?.productType || "혼합음료",
+                    }}
+                    currentValue={report.rootCauseAndActions.rootCause}
+                    onApplySentence={(sentence) =>
+                      updateRootCause({ rootCause: sentence })
+                    }
+                    onOpenPhraseManager={onOpenPhraseManager}
+                    fieldKey="rootCause"
+                  />
+
                   <textarea
                     id="field-root-cause"
                     rows={3}
@@ -4540,6 +5032,13 @@ export function InputFormPane({
                         <PhraseDropdown
                           fieldKey="preventiveMeasures"
                           activePresetId={selectedPresetId || undefined}
+                          situationContext={{
+                            claimType: report.customerClaim?.claimType || "이물",
+                            investigationItem: "재발방지",
+                            resultType: "해당 없음",
+                            usageLocation: "재발방지",
+                            relatedProductType: report.productInfo?.productType || "혼합음료",
+                          }}
                           onSelectPhrase={(content) =>
                             updateRootCause({ preventiveMeasures: content })
                           }
@@ -4551,6 +5050,24 @@ export function InputFormPane({
                           onApply={(p) => updateRootCause({ preventiveMeasures: p })}
                         />
                       </div>
+
+                      {/* 상황 기반 자동 추천 상용구 카드 */}
+                      <SituationPhraseRecommendationCard
+                        context={{
+                          claimType: report.customerClaim?.claimType || "이물",
+                          investigationItem: "재발방지",
+                          resultType: "해당 없음",
+                          usageLocation: "재발방지",
+                          relatedProductType: report.productInfo?.productType || "혼합음료",
+                        }}
+                        currentValue={report.rootCauseAndActions.preventiveMeasures}
+                        onApplySentence={(sentence) =>
+                          updateRootCause({ preventiveMeasures: sentence })
+                        }
+                        onOpenPhraseManager={onOpenPhraseManager}
+                        fieldKey="preventiveMeasures"
+                      />
+
                       <textarea
                         id="field-preventive-measures"
                         rows={4}
@@ -4649,10 +5166,35 @@ export function InputFormPane({
                 <PhraseDropdown
                   fieldKey="apologyText"
                   activePresetId={selectedPresetId || undefined}
+                  situationContext={{
+                    claimType: report.customerClaim?.claimType || "이물",
+                    investigationItem: "결론/사과",
+                    resultType: "해당 없음",
+                    usageLocation: "사과문",
+                    relatedProductType: report.productInfo?.productType || "혼합음료",
+                  }}
                   onSelectPhrase={(content) => updateConclusion({ apologyText: content })}
                   onOpenManager={onOpenPhraseManager}
                 />
               </div>
+
+              {/* 상황 기반 자동 추천 상용구 카드 */}
+              <SituationPhraseRecommendationCard
+                context={{
+                  claimType: report.customerClaim?.claimType || "이물",
+                  investigationItem: "결론/사과",
+                  resultType: "해당 없음",
+                  usageLocation: "사과문",
+                  relatedProductType: report.productInfo?.productType || "혼합음료",
+                }}
+                currentValue={report.conclusion.apologyText}
+                onApplySentence={(sentence) =>
+                  updateConclusion({ apologyText: sentence })
+                }
+                onOpenPhraseManager={onOpenPhraseManager}
+                fieldKey="apologyText"
+              />
+
               <textarea
                 id="field-conclusion-apology"
                 rows={4}
@@ -4761,6 +5303,40 @@ export function InputFormPane({
                 </div>
               </div>
             </div>
+            </div>
+
+            {/* 조사 완료 및 향후 유사사례 지식화 (Knowledge Base 등록) 배너 */}
+            <div className="p-4 sm:p-5 bg-gradient-to-r from-emerald-50 via-teal-50 to-blue-50 border-2 border-emerald-300 rounded-2xl flex flex-col md:flex-row md:items-center justify-between gap-3 shadow-2xs">
+              <div className="space-y-1">
+                <div className="flex items-center gap-2">
+                  <div className="w-7 h-7 rounded-lg bg-emerald-600 text-white flex items-center justify-center shadow-xs">
+                    <Database className="w-4 h-4" />
+                  </div>
+                  <h4 className="text-xs sm:text-sm font-black text-emerald-950">
+                    클레임 조사 완료 및 향후 유사사례 지식화 (Knowledge Base)
+                  </h4>
+                  <span className="px-2 py-0.5 rounded text-[10px] font-black bg-emerald-200 text-emerald-900">
+                    재사용 지식 등록
+                  </span>
+                </div>
+                <p className="text-xs text-slate-600 leading-relaxed max-w-2xl">
+                  이 클레임의 조사 항목·방법·공정·설비 및 승인된 원인 정보를 구조화된 <strong>Knowledge 데이터</strong>로 저장하여
+                  향후 신규 클레임 조사 시 유사 사례로 자동 추천되고 조사 패키지로 재사용할 수 있습니다.
+                  (기존 보고서 원본은 보관함에 온전히 보존됩니다)
+                </p>
+              </div>
+
+              {onOpenCompleteKnowledge && (
+                <button
+                  type="button"
+                  id="btn-conclusion-complete-knowledge"
+                  onClick={onOpenCompleteKnowledge}
+                  className="shrink-0 inline-flex items-center gap-2 px-4 py-2.5 text-xs font-black text-white bg-gradient-to-r from-emerald-600 via-teal-600 to-blue-600 hover:from-emerald-500 hover:to-teal-500 rounded-xl shadow-sm hover:shadow transition-all active:scale-95 border border-emerald-400 cursor-pointer"
+                >
+                  <CheckCircle2 className="w-4 h-4 text-emerald-100" />
+                  <span>이 클레임 완료 및 지식화 등록</span>
+                </button>
+              )}
             </div>
 
             {/* 서브 섹션 B. 첨부 사진 및 회사 CI 로고 관리 */}
@@ -4911,6 +5487,19 @@ export function InputFormPane({
             </span>
           )}
 
+          {onOpenCompleteKnowledge && (
+            <button
+              type="button"
+              id="btn-bottom-complete-knowledge"
+              onClick={onOpenCompleteKnowledge}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-black text-white bg-gradient-to-r from-emerald-600 via-teal-600 to-emerald-700 hover:from-emerald-500 hover:to-teal-500 rounded-xl shadow-xs transition-all active:scale-95 border border-emerald-400/50 cursor-pointer"
+              title="조사 완료 처리 및 향후 유사사례 검색에 활용할 수 있도록 Knowledge 데이터로 연결"
+            >
+              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-200" />
+              <span>클레임 완료 & 지식화</span>
+            </button>
+          )}
+
           <button
             type="button"
             id="btn-next-required-action"
@@ -4959,7 +5548,9 @@ export function InputFormPane({
       <PastClaimSearchModal
         isOpen={isInternalPastClaimOpen}
         onClose={() => setIsInternalPastClaimOpen(false)}
+        currentReport={report}
         onCopyAsNewClaim={onCopyAsNewClaim}
+        onUseAsInvestigationPackage={handleUseAsInvestigationPackage}
       />
 
       {/* 제품 Master 모달 (내부 fallback) */}
@@ -4969,6 +5560,13 @@ export function InputFormPane({
         onSelectProduct={handleApplyProductFromMaster}
         selectedProductId={report.productInfo.productId}
         isSelectionMode={isInternalProductSelectionMode}
+      />
+
+      {/* 구조화 공정 Master 상세 조회 모달 */}
+      <ProcessStepDetailModal
+        isOpen={isFormStepModalOpen}
+        onClose={() => setIsFormStepModalOpen(false)}
+        step={selectedFormStep}
       />
     </div>
   );

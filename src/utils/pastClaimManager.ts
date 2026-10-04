@@ -1,7 +1,9 @@
 import { ReportData } from "../types";
 import { getSavedReports } from "../components/ReportListDrawer";
 import { CLAIM_PRESETS, INITIAL_REPORT_DATA } from "../data/presets";
+import { COMPLETED_HISTORICAL_CLAIMS } from "../data/completedHistoricalClaims";
 import { mergePresetData } from "./storage";
+import { loadAllClaimKnowledge } from "./claimKnowledgeStorage";
 
 export interface PastClaimSearchFilters {
   productName: string;      // 제품명
@@ -77,7 +79,43 @@ export function loadAllHistoricalClaims(): PastClaimItem[] {
   const items: PastClaimItem[] = [];
   const seenIds = new Set<string>();
 
-  // 1. 사용자 보관함에 저장된 실제 보고서 불러오기
+  // 0. 조사자가 승인한 완료 클레임 지식 베이스(Knowledge Base) 최우선 로드
+  try {
+    const knowledgeItems = loadAllClaimKnowledge();
+    for (const k of knowledgeItems) {
+      if (k.isApprovedForKnowledge && k.reportSnapshot) {
+        const rep = k.reportSnapshot;
+        const targetId = rep.id || k.id;
+        if (!seenIds.has(targetId)) {
+          seenIds.add(targetId);
+          items.push({
+            id: targetId,
+            report: rep,
+            receivedAt: rep.customerClaim?.receivedAt || rep.issueDate || k.registeredAt.split("T")[0],
+            productName: k.basicInfo.productName,
+            claimType: k.basicInfo.claimType,
+            lotNumber: k.basicInfo.lotNumber,
+            manufactureLine: k.basicInfo.manufactureLine,
+            researcherName: k.reportInfo.researcherName,
+            claimDetailsSnippet: (rep.customerClaim?.claimDetails || "").slice(0, 120),
+            investigationStatus: k.conclusionInfo.isCauseIdentified ? "원인 규명 완료" : "조사 완료",
+          });
+        }
+      }
+    }
+  } catch (err) {
+    console.warn("Knowledge load in pastClaimManager:", err);
+  }
+
+  // 1. 표준 완료된 과거 클레임 데이터셋 우선 로드
+  for (const completedItem of COMPLETED_HISTORICAL_CLAIMS) {
+    if (!seenIds.has(completedItem.id)) {
+      seenIds.add(completedItem.id);
+      items.push(completedItem);
+    }
+  }
+
+  // 2. 사용자 보관함에 저장된 실제 보고서 불러오기
   const savedReports = getSavedReports();
   for (const rep of savedReports) {
     if (rep && rep.id && !seenIds.has(rep.id)) {
@@ -97,7 +135,7 @@ export function loadAllHistoricalClaims(): PastClaimItem[] {
     }
   }
 
-  // 2. 표준 과거 클레임 프리셋 데이터를 완전한 ReportData로 병합하여 등록
+  // 3. 표준 과거 클레임 프리셋 데이터를 완전한 ReportData로 병합하여 등록
   for (const preset of CLAIM_PRESETS) {
     const virtualId = `hist-${preset.id}`;
     if (!seenIds.has(virtualId)) {

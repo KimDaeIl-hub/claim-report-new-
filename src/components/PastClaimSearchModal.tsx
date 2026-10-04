@@ -39,11 +39,14 @@ import {
   ClaimCopyOptions,
   DEFAULT_CLAIM_COPY_OPTIONS,
 } from "../utils/pastClaimManager";
+import { ImportInvestigationStructureModal } from "./ImportInvestigationStructureModal";
 
 interface PastClaimSearchModalProps {
   isOpen: boolean;
   onClose: () => void;
+  currentReport?: ReportData;
   onCopyAsNewClaim?: (newReport: ReportData) => void;
+  onUseAsInvestigationPackage?: (pastReport: ReportData) => void;
 }
 
 const INITIAL_FILTERS: PastClaimSearchFilters = {
@@ -75,11 +78,14 @@ const CLAIM_TYPE_OPTIONS = [
 export function PastClaimSearchModal({
   isOpen,
   onClose,
+  currentReport,
   onCopyAsNewClaim,
+  onUseAsInvestigationPackage,
 }: PastClaimSearchModalProps) {
   const [filters, setFilters] = useState<PastClaimSearchFilters>(INITIAL_FILTERS);
   const [selectedClaim, setSelectedClaim] = useState<PastClaimItem | null>(null);
   const [isCopyConfirmOpen, setIsCopyConfirmOpen] = useState(false);
+  const [isConfirmStructureOpen, setIsConfirmStructureOpen] = useState(false);
   const [copyOptions, setCopyOptions] = useState<ClaimCopyOptions>(DEFAULT_CLAIM_COPY_OPTIONS);
 
   // 과거 클레임 전체 데이터셋 (보관함 + 표준 이력 데이터 융합)
@@ -263,6 +269,19 @@ export function PastClaimSearchModal({
                   <Lock className="w-3.5 h-3.5 text-amber-600" />
                   <span>읽기 전용</span>
                 </div>
+
+                {/* [이 사례를 조사 패키지로 사용] */}
+                {onUseAsInvestigationPackage && (
+                  <button
+                    type="button"
+                    onClick={() => setIsConfirmStructureOpen(true)}
+                    className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-bold text-white bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-700 hover:to-blue-700 rounded-xl transition-all cursor-pointer shadow-sm active:scale-95"
+                    title="이 사례의 조사 방법과 구조만 가져오고 실제 조사 결과는 새로 입력합니다"
+                  >
+                    <Sparkles className="w-3.5 h-3.5 text-amber-300" />
+                    <span>이 사례를 조사 패키지로 사용</span>
+                  </button>
+                )}
 
                 {/* [이 클레임을 새 클레임으로 복사] 상단 버튼 */}
                 <button
@@ -470,7 +489,19 @@ export function PastClaimSearchModal({
                 <span>검색 목록으로 돌아가기</span>
               </button>
 
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
+                {onUseAsInvestigationPackage && (
+                  <button
+                    type="button"
+                    onClick={() => setIsConfirmStructureOpen(true)}
+                    className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold text-white bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-700 hover:to-blue-700 rounded-xl transition-all cursor-pointer shadow-sm active:scale-95"
+                    title="이 사례의 조사 방법과 구조만 가져오고 실제 조사 결과는 새로 입력합니다"
+                  >
+                    <Sparkles className="w-3.5 h-3.5 text-amber-300" />
+                    <span>이 사례를 조사 패키지로 사용</span>
+                  </button>
+                )}
+
                 <button
                   type="button"
                   id="btn-copy-as-new-claim-bottom"
@@ -1320,6 +1351,23 @@ export function PastClaimSearchModal({
           </div>
         </div>
       )}
+
+      {/* 과거 사례 조사 구조 가져오기 확인 모달 */}
+      <ImportInvestigationStructureModal
+        isOpen={isConfirmStructureOpen}
+        onClose={() => setIsConfirmStructureOpen(false)}
+        pastReport={selectedClaim?.report || null}
+        currentReport={currentReport}
+        claimTitle={`${selectedClaim?.productName || ""} (${selectedClaim?.claimType || ""})`}
+        claimDate={selectedClaim?.receivedAt}
+        onConfirm={(pastRep) => {
+          if (onUseAsInvestigationPackage) {
+            onUseAsInvestigationPackage(pastRep);
+          }
+          setIsConfirmStructureOpen(false);
+          handleCloseModal();
+        }}
+      />
     </div>
   );
 }

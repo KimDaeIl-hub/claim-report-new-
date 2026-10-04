@@ -27,6 +27,7 @@ import {
   AlertTriangle,
   Save,
   HelpCircle,
+  Database,
 } from "lucide-react";
 import {
   ReportData,
@@ -58,8 +59,10 @@ import {
   saveProcessStep,
 } from "../data/processStepMaster";
 import { ProcessStepDetailModal } from "./ProcessStepDetailModal";
+import { ClaimKnowledgeItem } from "../types/claimKnowledge";
+import { loadAllClaimKnowledge, deleteClaimKnowledge } from "../utils/claimKnowledgeStorage";
 
-export type ManagerTab = "presets" | "phrases" | "processes";
+export type ManagerTab = "presets" | "phrases" | "processes" | "knowledge";
 
 interface UnifiedQualityManagerModalProps {
   isOpen: boolean;
@@ -69,6 +72,8 @@ interface UnifiedQualityManagerModalProps {
   onApplyPreset?: (preset: ClaimPreset) => void;
   onApplyPhrase?: (fieldKey: string, content: string) => void;
   onApplyProcess?: (process: FactoryProcessPreset) => void;
+  onUseAsInvestigationPackage?: (pastReport: ReportData) => void;
+  onOpenQualityKnowledgeCenter?: (tab?: string) => void;
 }
 
 export const CLAIM_TYPE_CONFIG: Record<
@@ -120,6 +125,8 @@ export function UnifiedQualityManagerModal({
   onApplyPreset,
   onApplyPhrase,
   onApplyProcess,
+  onUseAsInvestigationPackage,
+  onOpenQualityKnowledgeCenter,
 }: UnifiedQualityManagerModalProps) {
   // Top-level active tab: presets | phrases | processes
   const [activeTab, setActiveTab] = useState<ManagerTab>(initialTab);
@@ -625,6 +632,31 @@ export function UnifiedQualityManagerModal({
     setActiveTab("presets");
   };
 
+  // =========================================================================
+  // TAB 4: KNOWLEDGE BASE STATE & HELPERS
+  // =========================================================================
+  const [claimKnowledgeList, setClaimKnowledgeList] = useState<ClaimKnowledgeItem[]>(() => loadAllClaimKnowledge());
+  const [knowledgeSearchQuery, setKnowledgeSearchQuery] = useState("");
+  const [expandedKnowledgeId, setExpandedKnowledgeId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (isOpen) {
+      setClaimKnowledgeList(loadAllClaimKnowledge());
+    }
+  }, [isOpen, activeTab]);
+
+  const filteredKnowledge = claimKnowledgeList.filter((item) => {
+    if (!knowledgeSearchQuery.trim()) return true;
+    const q = knowledgeSearchQuery.toLowerCase().trim();
+    return (
+      item.basicInfo.productName.toLowerCase().includes(q) ||
+      item.basicInfo.claimType.toLowerCase().includes(q) ||
+      item.basicInfo.lotNumber.toLowerCase().includes(q) ||
+      item.conclusionInfo.causeCategory.toLowerCase().includes(q) ||
+      item.conclusionInfo.causeDetail.toLowerCase().includes(q)
+    );
+  });
+
   if (!isOpen) return null;
 
   return (
@@ -650,6 +682,17 @@ export function UnifiedQualityManagerModal({
             </div>
 
             <div className="flex items-center gap-2">
+              {onOpenQualityKnowledgeCenter && (
+                <button
+                  type="button"
+                  onClick={() => onOpenQualityKnowledgeCenter("products")}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-black text-white bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 hover:from-blue-500 hover:to-purple-500 rounded-lg shadow-xs border border-blue-400/50 cursor-pointer active:scale-95"
+                  title="제품 · 제조처 · 공정 · 클레임유형 · 템플릿 · 상용구 · 과거사례 · 품질지식 8대 정보 360° 연계 화면 열기"
+                >
+                  <Layers className="w-3.5 h-3.5 text-amber-300" />
+                  <span>360° 품질 지식센터 열기</span>
+                </button>
+              )}
               <button
                 type="button"
                 onClick={onClose}
@@ -709,6 +752,22 @@ export function UnifiedQualityManagerModal({
                 <span>3. 제조공정도 템플릿</span>
                 <span className="text-[10px] bg-blue-900/60 text-blue-200 px-1.5 py-0.2 rounded-full">
                   {factoryPresets.length}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setActiveTab("knowledge")}
+                className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                  activeTab === "knowledge"
+                    ? "bg-blue-600 text-white shadow-xs"
+                    : "text-slate-300 hover:text-white hover:bg-slate-700"
+                }`}
+              >
+                <Database className="w-3.5 h-3.5 text-amber-300" />
+                <span>4. 완료 클레임 지식 베이스</span>
+                <span className="text-[10px] bg-blue-900/60 text-blue-200 px-1.5 py-0.2 rounded-full">
+                  {claimKnowledgeList.length}
                 </span>
               </button>
             </div>
@@ -1945,6 +2004,144 @@ export function UnifiedQualityManagerModal({
           </div>
         )}
 
+        {/* ========================================================================= */}
+        {/* TAB 4: KNOWLEDGE BASE VIEW */}
+        {/* ========================================================================= */}
+        {activeTab === "knowledge" && (
+          <div className="flex-1 flex flex-col overflow-hidden bg-slate-50">
+            {/* Top Toolbar */}
+            <div className="p-4 bg-white border-b border-slate-200 flex flex-wrap items-center justify-between gap-3 shrink-0">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-lg bg-amber-500 text-slate-950 flex items-center justify-center font-bold">
+                  <Database className="w-4 h-4 fill-slate-950" />
+                </div>
+                <div>
+                  <h4 className="text-xs sm:text-sm font-bold text-slate-900">
+                    완료 클레임 지식 베이스 (Knowledge Base)
+                  </h4>
+                  <p className="text-[11px] text-slate-500">
+                    완료 처리된 클레임 중 조사자가 승인한 5대 핵심 지식 데이터 ({claimKnowledgeList.length}건 보관)
+                  </p>
+                </div>
+              </div>
+
+              <div className="relative min-w-[240px] max-w-sm">
+                <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  value={knowledgeSearchQuery}
+                  onChange={(e) => setKnowledgeSearchQuery(e.target.value)}
+                  placeholder="제품명, 클레임 유형, 원인 검색..."
+                  className="w-full text-xs pl-8 pr-3 py-1.5 bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500"
+                />
+              </div>
+            </div>
+
+            {/* List */}
+            <div className="flex-1 overflow-y-auto p-4 space-y-3">
+              {filteredKnowledge.length === 0 ? (
+                <div className="text-center py-16 text-slate-400 text-xs">
+                  <Database className="w-8 h-8 mx-auto mb-2 opacity-30" />
+                  <p className="font-semibold text-slate-600">등록된 지식 데이터가 없습니다.</p>
+                  <p className="text-[11px] mt-1">상단 [클레임 완료 & 지식화] 버튼으로 완료 시 등록할 수 있습니다.</p>
+                </div>
+              ) : (
+                filteredKnowledge.map((item) => {
+                  const isExp = expandedKnowledgeId === item.id;
+                  return (
+                    <div
+                      key={item.id}
+                      className="bg-white rounded-xl border border-slate-200 p-4 shadow-2xs hover:shadow-xs transition-all space-y-2.5"
+                    >
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="px-2 py-0.5 rounded text-[11px] font-black bg-blue-600 text-white">
+                            {item.basicInfo.productName}
+                          </span>
+                          <span className="px-2 py-0.5 rounded text-[11px] font-bold bg-purple-100 text-purple-800 border border-purple-200">
+                            {item.basicInfo.claimType}
+                          </span>
+                          <span className="px-2 py-0.5 rounded text-[11px] font-mono bg-slate-100 text-slate-700">
+                            {item.basicInfo.manufactureLine}
+                          </span>
+                          <span
+                            className={`px-2 py-0.5 rounded text-[11px] font-black flex items-center gap-1 ${
+                              item.conclusionInfo.isCauseIdentified
+                                ? "bg-emerald-100 text-emerald-900 border border-emerald-300"
+                                : "bg-amber-100 text-amber-900 border border-amber-300"
+                            }`}
+                          >
+                            {item.conclusionInfo.isCauseIdentified ? (
+                              <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                            ) : (
+                              <AlertTriangle className="w-3 h-3 text-amber-600" />
+                            )}
+                            <span>{item.conclusionInfo.causeStatusLabel}</span>
+                          </span>
+                        </div>
+
+                        <div className="flex items-center gap-2 self-end sm:self-center">
+                          {onUseAsInvestigationPackage && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                onUseAsInvestigationPackage(item.reportSnapshot);
+                                onClose();
+                              }}
+                              className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-bold text-slate-950 bg-gradient-to-r from-amber-400 to-yellow-300 hover:from-amber-300 hover:to-yellow-200 rounded-lg shadow-2xs border border-amber-300 active:scale-95 cursor-pointer"
+                            >
+                              <Sparkles className="w-3 h-3 fill-slate-950" />
+                              <span>조사 패키지로 사용</span>
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => setExpandedKnowledgeId(isExp ? null : item.id)}
+                            className="px-2 py-1 text-xs text-slate-600 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 rounded transition-colors"
+                          >
+                            {isExp ? "접기 ▴" : "상세보기 ▾"}
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="text-xs text-slate-700 flex flex-wrap items-center gap-3">
+                        <span>원인 분류: <strong className="text-slate-900">{item.conclusionInfo.causeCategory}</strong></span>
+                        <span className="text-slate-400">|</span>
+                        <span>조사항목 {item.investigationInfo.investigationItems.length}건</span>
+                        <span className="text-slate-400">|</span>
+                        <span>관련공정 {item.investigationInfo.relatedProcesses.length}개</span>
+                        <span className="text-slate-400">|</span>
+                        <span>완료일: {item.reportInfo.completedDate}</span>
+                      </div>
+
+                      {isExp && (
+                        <div className="pt-3 border-t border-slate-100 space-y-2 text-xs animate-in fade-in duration-100">
+                          <div className="p-3 bg-slate-50 rounded-lg space-y-1">
+                            <span className="font-bold text-slate-800">조사 항목 구성:</span>
+                            <div className="flex flex-wrap gap-1 mt-1">
+                              {item.investigationInfo.investigationItems.map((itm, i) => (
+                                <span key={i} className="px-2 py-0.5 rounded bg-white border border-slate-200 text-[11px] text-slate-700">
+                                  ✓ {itm}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                          <div className="p-3 bg-amber-50/60 rounded-lg space-y-1 border border-amber-200 text-amber-950">
+                            <span className="font-bold">조사자 승인 원인 상세:</span>
+                            <p className="text-[11px] text-slate-800 leading-relaxed mt-0.5">
+                              {item.conclusionInfo.causeDetail}
+                            </p>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        )}
+
         {/* Global Footer */}
         <div className="px-5 py-2.5 bg-slate-100 border-t border-slate-200 flex items-center justify-between text-xs shrink-0">
           <div className="text-slate-500 flex items-center gap-2">
@@ -1954,6 +2151,8 @@ export function UnifiedQualityManagerModal({
             <span className="font-semibold text-slate-700">상용구 {phrases.length}건</span>
             <span>·</span>
             <span className="font-semibold text-slate-700">제조공정도 {factoryPresets.length}건</span>
+            <span>·</span>
+            <span className="font-semibold text-blue-700">지식 {claimKnowledgeList.length}건</span>
           </div>
 
           <div className="flex items-center gap-2">

@@ -14,8 +14,30 @@ export interface FactoryProcessPreset {
 
 export const FACTORY_PROCESS_PRESETS: FactoryProcessPreset[] = [
   // =========================================================================
-  // [1] 자사 생산팀 (식품팀 / 건기식팀)
+  // [1] 자사 생산팀 (식품팀 / 건기식팀 / A Line)
   // =========================================================================
+  {
+    id: "line-kd-pt-01",
+    name: "광동제약 평택공장 A Line",
+    type: "internal",
+    teamOrCategory: "A Line (유리병 혼합음료)",
+    description: "광동제약 평택공장 A Line 표준 9단계 공정 (원료 투입 ~ 배합 ~ 여과 ~ UHT ~ 저장 ~ 충전 ~ 캡핑 ~ 후살균 ~ 포장)",
+    processFlow: "원료 투입 → 배합 → 여과 → UHT → 저장 → 충전 → 캡핑 → 후살균 → 포장",
+    processSteps: [
+      "원료 투입",
+      "배합",
+      "여과",
+      "UHT",
+      "저장",
+      "충전",
+      "캡핑",
+      "후살균",
+      "포장",
+    ],
+    filtrationAnalysis: "원료 배합 후 150 Mesh(105㎛) 듀플렉스 정밀 스트레이너를 통과하여 미세 이물 및 미용해 입자 원천 차단.",
+    cleaningAnalysis: "공병 투입 후 85℃ 이상 고온 온수 린싱 및 청정 에어 블로우를 동시 진행하여 용기 내부 잔류물 및 이물 제거.",
+    criticalControlPoint: "UHT 초고온 순간 살균 온도 모니터링(CCP-1B: 135±2℃, 30초 유지).",
+  },
   {
     id: "internal-food",
     name: "광동제약 식품팀",
@@ -429,6 +451,13 @@ export function loadAllFactoryPresets(): FactoryProcessPreset[] {
     if (!Array.isArray(parsed) || parsed.length === 0) {
       localStorage.setItem(CUSTOM_FACTORIES_STORAGE_KEY, JSON.stringify(FACTORY_PROCESS_PRESETS));
       return [...FACTORY_PROCESS_PRESETS];
+    }
+    const existingIds = new Set(parsed.map((p) => p.id));
+    const missingDefaults = FACTORY_PROCESS_PRESETS.filter((p) => !existingIds.has(p.id));
+    if (missingDefaults.length > 0) {
+      const merged = [...parsed, ...missingDefaults];
+      localStorage.setItem(CUSTOM_FACTORIES_STORAGE_KEY, JSON.stringify(merged));
+      return merged;
     }
     return parsed;
   } catch {

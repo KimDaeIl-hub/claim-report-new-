@@ -21,8 +21,13 @@ import {
   History,
   Package,
   Factory,
+  Zap,
+  CheckCircle2,
+  Database,
 } from "lucide-react";
-import { ReportData, ClaimPreset, ProductMaster } from "./types";
+import { ReportData, ClaimPreset, ProductMaster, InvestigationPackage } from "./types";
+import { ClaimKnowledgeItem } from "./types/claimKnowledge";
+import { saveClaimKnowledge, loadAllClaimKnowledge } from "./utils/claimKnowledgeStorage";
 import { INITIAL_REPORT_DATA } from "./data/presets";
 import { InputFormPane } from "./components/InputFormPane";
 import { ReportPreviewPane } from "./components/ReportPreviewPane";
@@ -37,6 +42,13 @@ import { ReportValidationModal } from "./components/ReportValidationModal";
 import { PastClaimSearchModal } from "./components/PastClaimSearchModal";
 import { ProductMasterModal } from "./components/ProductMasterModal";
 import { ManufacturerMasterModal } from "./components/ManufacturerMasterModal";
+import { InvestigationPackageModal } from "./components/InvestigationPackageModal";
+import { InvestigationPreparationView } from "./components/InvestigationPreparationView";
+import { CompleteClaimKnowledgeModal } from "./components/CompleteClaimKnowledgeModal";
+import { ClaimKnowledgeManagerModal } from "./components/ClaimKnowledgeManagerModal";
+import { QualityKnowledgeCenterModal, KnowledgeCenterTab } from "./components/QualityKnowledgeCenterModal";
+import { applyInvestigationPackageToReport } from "./data/investigationPackageBuilder";
+import { applyInvestigationStructureToReport } from "./utils/investigationStructureImporter";
 import { validateReport } from "./utils/reportValidator";
 import {
   ReportListDrawer,
@@ -50,7 +62,7 @@ import {
   DRAFT_STORAGE_KEY,
 } from "./utils/storage";
 
-type ViewMode = "form" | "report" | "email";
+type ViewMode = "preparation" | "form" | "report" | "email";
 
 export default function App() {
   // Initialize report state from LocalStorage draft or default preset
@@ -123,14 +135,72 @@ export default function App() {
   const [isProductMasterOpen, setIsProductMasterOpen] = useState(false);
   const [isProductSelectionMode, setIsProductSelectionMode] = useState(false);
   const [isManufacturerMasterOpen, setIsManufacturerMasterOpen] = useState(false);
+  const [isPackageModalOpen, setIsPackageModalOpen] = useState(false);
+  const [isCompleteKnowledgeModalOpen, setIsCompleteKnowledgeModalOpen] = useState(false);
+  const [isKnowledgeManagerOpen, setIsKnowledgeManagerOpen] = useState(false);
+  const [isKnowledgeCenterOpen, setIsKnowledgeCenterOpen] = useState(false);
+  const [knowledgeCenterTab, setKnowledgeCenterTab] = useState<KnowledgeCenterTab>("products");
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  const openKnowledgeCenter = (tab: KnowledgeCenterTab = "products") => {
+    setKnowledgeCenterTab(tab);
+    setIsKnowledgeCenterOpen(true);
+  };
 
   const validationSummary = validateReport(report);
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
     setTimeout(() => setToastMessage(null), 3500);
+  };
+
+  const handleApproveKnowledge = (knowledgeItem: ClaimKnowledgeItem, updatedReport: ReportData) => {
+    // 1. 기존 보고서 보존 (보관함 및 로컬 DB 영구 보관)
+    saveReportToArchive(updatedReport);
+    saveReportToDb(updatedReport);
+    setReport(updatedReport);
+    setSavedCount(getSavedReports().length);
+
+    // 2. 구조화된 5대 지식 데이터 Knowledge Base 등록
+    saveClaimKnowledge(knowledgeItem);
+
+    // 3. 안내 알림
+    showToast(
+      `클레임 조사가 완료되었으며, 구조화된 Knowledge Base(${knowledgeItem.conclusionInfo.causeStatusLabel})로 연결되었습니다. 향후 유사 클레임에 재사용됩니다.`
+    );
+  };
+
+  const handleCompleteWithoutKnowledge = (updatedReport: ReportData) => {
+    saveReportToArchive(updatedReport);
+    saveReportToDb(updatedReport);
+    setReport(updatedReport);
+    setSavedCount(getSavedReports().length);
+    showToast("보고서가 완료 처리되어 보관함에 보존되었습니다. (지식화 제외)");
+  };
+
+  const handleStartInvestigationPackage = (assembledPackage: InvestigationPackage) => {
+    setReport((prev) => {
+      const next = applyInvestigationPackageToReport(prev, assembledPackage);
+      saveReportToDb(next);
+      return next;
+    });
+    setViewMode("form");
+    setFormActiveTab("claim");
+    showToast(`'${assembledPackage.productMaster.productName}' 조사 패키지가 적용되었습니다. 조사를 시작합니다.`);
+  };
+
+  const handleUseAsInvestigationPackage = (pastReport: ReportData) => {
+    setReport((prev) => {
+      const next = applyInvestigationStructureToReport(prev, pastReport);
+      saveReportToDb(next);
+      return next;
+    });
+    setViewMode("form");
+    setFormActiveTab("analysis"); // Move immediately to analysis results tab
+    showToast(
+      `'${pastReport.productInfo.productName || pastReport.title || "과거 사례"}'의 조사 구조(항목, 방법, 공정, 상용구)가 적용되었습니다. 실제 결과는 새로 입력해주세요.`
+    );
   };
 
   const handleNavigateToField = (tabId: string, fieldId?: string) => {
@@ -233,12 +303,12 @@ export default function App() {
         customerPhotos: [],
       },
       productInfo: {
-        productName: "",
+        productName: "비타민 음료 A",
         lotNumber: "",
         manufactureDate: "",
         expiryDate: "",
-        packageType: "",
-        manufacturer: "평택공장",
+        packageType: "유리병",
+        manufacturer: "광동제약 평택공장",
       },
       analysisResults: {
         ...JSON.parse(JSON.stringify(INITIAL_REPORT_DATA.analysisResults)),
@@ -252,8 +322,8 @@ export default function App() {
       },
     };
     setReport(newEmptyReport);
-    setViewMode("form");
-    showToast("새 보고서 작성이 시작되었습니다.");
+    setViewMode("preparation");
+    showToast("신규 클레임 조사 준비 화면으로 이동했습니다. 기본정보를 입력하고 조사 패키지를 구성하세요.");
   };
 
   const handleCopyAsNewClaim = (newReport: ReportData) => {
@@ -413,16 +483,33 @@ export default function App() {
           </div>
         </div>
 
-        {/* 1-Click View Mode Switcher (Form / Report / Email) */}
+        {/* 1-Click View Mode Switcher (Preparation / Form / Report / Email) */}
         <div className="flex items-center bg-slate-800 p-1 rounded-xl border border-slate-700 shadow-inner">
           <button
             type="button"
+            id="btn-nav-mode-preparation"
+            onClick={() => setViewMode("preparation")}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+              viewMode === "preparation"
+                ? "bg-amber-400 text-slate-950 shadow-xs font-black ring-1 ring-amber-300"
+                : "text-slate-300 hover:text-white hover:bg-slate-700/60"
+            }`}
+            title="신규 클레임 조사 준비: 기본정보 입력 및 6대 조사 패키지 자동 구성"
+          >
+            <Zap className={`w-3.5 h-3.5 ${viewMode === "preparation" ? "fill-slate-950 text-slate-950" : "text-amber-400"}`} />
+            <span>조사 준비</span>
+          </button>
+
+          <button
+            type="button"
+            id="btn-nav-mode-form"
             onClick={() => setViewMode("form")}
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
               viewMode === "form"
                 ? "bg-blue-600 text-white shadow-xs"
                 : "text-slate-300 hover:text-white hover:bg-slate-700/60"
             }`}
+            title="원인조사 세부 내용 작성 폼"
           >
             <Edit3 className="w-3.5 h-3.5" />
             <span>작성 폼</span>
@@ -430,6 +517,7 @@ export default function App() {
 
           <button
             type="button"
+            id="btn-nav-mode-report"
             onClick={() => setViewMode("report")}
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
               viewMode === "report"
@@ -444,6 +532,7 @@ export default function App() {
 
           <button
             type="button"
+            id="btn-nav-mode-email"
             onClick={() => setViewMode("email")}
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
               viewMode === "email"
@@ -459,6 +548,30 @@ export default function App() {
 
         {/* Status indicator & Utility Action Buttons */}
         <div className="flex items-center gap-2">
+          {/* Key Feature: 신규 클레임 (조사 준비 시작) Button */}
+          <button
+            type="button"
+            id="btn-nav-new-claim"
+            onClick={handleNewReport}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-black text-white bg-blue-600 hover:bg-blue-500 rounded-lg shadow-xs transition-all active:scale-95 border border-blue-400 cursor-pointer"
+            title="신규 클레임 조사 준비 시작 (기본정보 입력 후 6대 조사 패키지 자동 구성)"
+          >
+            <Plus className="w-3.5 h-3.5 text-white stroke-[2.5]" />
+            <span>신규 클레임</span>
+          </button>
+
+          {/* Key Feature: 조사 패키지 자동 구성 Button */}
+          <button
+            type="button"
+            id="btn-nav-investigation-package"
+            onClick={() => setViewMode("preparation")}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-black text-slate-950 bg-gradient-to-r from-amber-400 via-amber-300 to-yellow-400 hover:from-amber-300 hover:to-yellow-300 rounded-lg shadow-sm hover:shadow transition-all active:scale-95 border border-amber-300 cursor-pointer"
+            title="제품 + 제조번호 + 클레임 유형을 입력하여 조사 자료와 조사 항목을 실시간 자동 구성"
+          >
+            <Zap className="w-3.5 h-3.5 fill-slate-950 text-slate-950" />
+            <span>조사 패키지 자동 구성</span>
+          </button>
+
           {/* Autosave badge */}
           <div className="hidden xl:flex items-center gap-1.5 px-2.5 py-1 bg-slate-800/80 rounded-full text-[11px] text-slate-300 border border-slate-700">
             <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
@@ -466,6 +579,18 @@ export default function App() {
               {lastSavedAt ? `자동 저장됨 (${lastSavedAt})` : "10초마다 자동 임시 저장"}
             </span>
           </div>
+
+          {/* Key Feature: 조사 완료 & 지식화 Button */}
+          <button
+            type="button"
+            id="btn-complete-claim-knowledge"
+            onClick={() => setIsCompleteKnowledgeModalOpen(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-black text-white bg-gradient-to-r from-emerald-600 via-teal-600 to-emerald-700 hover:from-emerald-500 hover:to-teal-500 rounded-lg shadow-sm transition-all active:scale-95 border border-emerald-400/50 cursor-pointer"
+            title="조사 완료 처리 및 향후 유사사례 검색에 활용할 수 있도록 Knowledge 데이터로 연결"
+          >
+            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-200" />
+            <span>클레임 완료 & 지식화</span>
+          </button>
 
           {/* Direct Manual Save Button */}
           <button
@@ -502,31 +627,38 @@ export default function App() {
             )}
           </button>
 
-          {/* Unified Quality Master Manager Button */}
+          {/* Knowledge Base Modal Trigger */}
           <button
             type="button"
-            onClick={() => {
-              setMasterManagerTab("presets");
-              setIsMasterManagerOpen(true);
-            }}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-white bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 rounded-lg shadow-xs transition-all border border-blue-400/40"
-            title="클레임 프리셋 · 상용구 · 제조공정도 3대 연계 통합 관리 센터"
+            id="btn-nav-knowledge-base"
+            onClick={() => openKnowledgeCenter("knowledge")}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold text-slate-200 hover:text-white bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 transition-colors cursor-pointer"
+            title="완료 클레임 지식 베이스(Knowledge Base) 목록 및 재사용"
+          >
+            <Database className="w-3.5 h-3.5 text-amber-400" />
+            <span className="hidden sm:inline">지식 베이스</span>
+          </button>
+
+          {/* Key Evolution: 품질 지식센터 (Quality Knowledge Center) Button */}
+          <button
+            type="button"
+            id="btn-nav-quality-knowledge-center"
+            onClick={() => openKnowledgeCenter("products")}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-black text-white bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 rounded-lg shadow-sm transition-all border border-blue-400/50 cursor-pointer active:scale-95"
+            title="품질 지식센터: 제품 · 제조처/라인 · 제조공정 · 클레임유형 · 템플릿 · 상용구 · 과거사례 · 품질지식 8대 정보 상호 연계 센터"
           >
             <Layers className="w-3.5 h-3.5 text-amber-300" />
-            <span className="hidden sm:inline">통합 기준정보 관리</span>
-            <span className="sm:hidden">통합관리</span>
+            <span className="hidden sm:inline">품질 지식센터</span>
+            <span className="sm:hidden">지식센터</span>
           </button>
 
           {/* Product Master Button */}
           <button
             type="button"
             id="btn-nav-product-master"
-            onClick={() => {
-              setIsProductSelectionMode(false);
-              setIsProductMasterOpen(true);
-            }}
+            onClick={() => openKnowledgeCenter("products")}
             className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold text-slate-200 hover:text-white bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 transition-colors"
-            title="제품 Master (제품명, 코드, 포장, 제조라인) 표준 관리"
+            title="제품 Master (제품명, 코드, 포장, 제조라인) 표준 관리 및 상호 연계"
           >
             <Package className="w-3.5 h-3.5 text-blue-400" />
             <span className="hidden sm:inline">제품 Master</span>
@@ -536,9 +668,9 @@ export default function App() {
           <button
             type="button"
             id="btn-nav-manufacturer-master"
-            onClick={() => setIsManufacturerMasterOpen(true)}
+            onClick={() => openKnowledgeCenter("manufacturers")}
             className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold text-slate-200 hover:text-white bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 transition-colors"
-            title="제조처 및 제조라인 Master (자사 공장, OEM, 라인 규격) 표준 관리"
+            title="제조처 및 제조라인 Master (자사 공장, OEM, 라인 규격) 표준 관리 및 상호 연계"
           >
             <Factory className="w-3.5 h-3.5 text-indigo-400" />
             <span className="hidden sm:inline">제조처/라인 Master</span>
@@ -547,12 +679,9 @@ export default function App() {
           {/* Preset Manager Button */}
           <button
             type="button"
-            onClick={() => {
-              setMasterManagerTab("presets");
-              setIsMasterManagerOpen(true);
-            }}
+            onClick={() => openKnowledgeCenter("templates")}
             className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold text-slate-200 hover:text-white bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 transition-colors"
-            title="클레임 유형 프리셋 추가/수정/관리"
+            title="조사 템플릿/프리셋 관리 및 상호 연계"
           >
             <Sparkles className="w-3.5 h-3.5 text-purple-400" />
             <span className="hidden sm:inline">프리셋</span>
@@ -561,12 +690,9 @@ export default function App() {
           {/* Phrase Manager */}
           <button
             type="button"
-            onClick={() => {
-              setMasterManagerTab("phrases");
-              setIsMasterManagerOpen(true);
-            }}
+            onClick={() => openKnowledgeCenter("phrases")}
             className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold text-slate-200 hover:text-white bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 transition-colors"
-            title="나만의 상용구 라이브러리 관리"
+            title="나만의 상용구 라이브러리 관리 및 상호 연계"
           >
             <BookOpen className="w-3.5 h-3.5 text-amber-400" />
             <span className="hidden sm:inline">상용구</span>
@@ -608,6 +734,30 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-2">
+            {/* [클레임 완료 & 지식화] 버튼 in subheader */}
+            <button
+              type="button"
+              id="btn-subheader-complete-claim"
+              onClick={() => setIsCompleteKnowledgeModalOpen(true)}
+              className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-black text-white bg-gradient-to-r from-emerald-600 via-teal-600 to-emerald-700 hover:from-emerald-500 hover:to-teal-500 border border-emerald-400 rounded-lg transition-colors shadow-2xs cursor-pointer active:scale-95"
+              title="조사 완료 처리 및 향후 유사사례 검색에 활용할 수 있도록 Knowledge 데이터로 연결"
+            >
+              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-200" />
+              <span>클레임 완료 & 지식화</span>
+            </button>
+
+            {/* [⚡ 조사 패키지 자동 구성] 버튼 in subheader */}
+            <button
+              type="button"
+              id="btn-subheader-investigation-package"
+              onClick={() => setIsPackageModalOpen(true)}
+              className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-black text-slate-950 bg-gradient-to-r from-amber-400 via-amber-300 to-yellow-400 hover:from-amber-300 hover:to-yellow-300 border border-amber-400 rounded-lg transition-colors shadow-2xs cursor-pointer active:scale-95"
+              title="제품 + 제조번호 + 클레임 유형으로 조사 패키지 자동 구성"
+            >
+              <Zap className="w-3.5 h-3.5 fill-slate-950 text-slate-950" />
+              <span>조사 패키지 자동 구성</span>
+            </button>
+
             {/* [이전 클레임 불러오기] 버튼 */}
             <button
               type="button"
@@ -679,6 +829,17 @@ export default function App() {
 
       {/* 3. Main Workspace Area */}
       <main className="flex-1 overflow-hidden relative">
+        {/* [Mode S] New Claim Investigation Preparation View (조사 준비 화면) */}
+        {viewMode === "preparation" && (
+          <div className="h-full w-full overflow-y-auto">
+            <InvestigationPreparationView
+              currentReport={report}
+              onStartInvestigation={handleStartInvestigationPackage}
+              onDirectToFormMode={() => setViewMode("form")}
+            />
+          </div>
+        )}
+
         {/* [Mode A] Input Form View (Kept mounted to preserve tab & scroll state) */}
         <div className={viewMode === "form" ? "h-full w-full flex flex-col bg-white" : "hidden"}>
           <InputFormPane
@@ -705,10 +866,13 @@ export default function App() {
             onOpenValidation={() => setIsValidationModalOpen(true)}
             onOpenPastClaims={() => setIsPastClaimModalOpen(true)}
             onCopyAsNewClaim={handleCopyAsNewClaim}
+            onUseAsInvestigationPackage={handleUseAsInvestigationPackage}
             onOpenProductMaster={(selectionMode) => {
               setIsProductSelectionMode(!!selectionMode);
               setIsProductMasterOpen(true);
             }}
+            onOpenPackageModal={() => setIsPackageModalOpen(true)}
+            onOpenCompleteKnowledge={() => setIsCompleteKnowledgeModalOpen(true)}
           />
         </div>
 
@@ -721,6 +885,7 @@ export default function App() {
               onPrint={handlePrint}
               onSwitchToForm={() => setViewMode("form")}
               onSwitchToEmail={() => setViewMode("email")}
+              onOpenCompleteKnowledge={() => setIsCompleteKnowledgeModalOpen(true)}
               onUpdateReport={setReport}
             />
           </div>
@@ -780,6 +945,11 @@ export default function App() {
         onApplyPreset={handleApplyPreset}
         onApplyPhrase={handleApplyPhrase}
         onApplyProcess={handleApplyProcess}
+        onUseAsInvestigationPackage={handleUseAsInvestigationPackage}
+        onOpenQualityKnowledgeCenter={(tab) => {
+          setIsMasterManagerOpen(false);
+          openKnowledgeCenter((tab as KnowledgeCenterTab) || "products");
+        }}
       />
 
       <PhraseManagerModal
@@ -816,7 +986,9 @@ export default function App() {
       <PastClaimSearchModal
         isOpen={isPastClaimModalOpen}
         onClose={() => setIsPastClaimModalOpen(false)}
+        currentReport={report}
         onCopyAsNewClaim={handleCopyAsNewClaim}
+        onUseAsInvestigationPackage={handleUseAsInvestigationPackage}
       />
 
       <ProductMasterModal
@@ -834,12 +1006,52 @@ export default function App() {
         selectedLineId={report.productInfo.manufactureLineId}
       />
 
+      {/* Investigation Package Auto-Assembly Modal */}
+      <InvestigationPackageModal
+        isOpen={isPackageModalOpen}
+        onClose={() => setIsPackageModalOpen(false)}
+        onStartInvestigation={handleStartInvestigationPackage}
+        onUseAsInvestigationPackage={handleUseAsInvestigationPackage}
+        initialProduct={report.productInfo.productName}
+        initialLotNumber={report.productInfo.lotNumber}
+      />
+
       <ReportListDrawer
         isOpen={isDrawerOpen}
         onClose={() => setIsDrawerOpen(false)}
         currentReport={report}
         onLoadReport={setReport}
         onNewReport={handleNewReport}
+      />
+
+      {/* 완료 클레임 지식화 승인 및 연결 모달 */}
+      <CompleteClaimKnowledgeModal
+        isOpen={isCompleteKnowledgeModalOpen}
+        onClose={() => setIsCompleteKnowledgeModalOpen(false)}
+        report={report}
+        onApproveKnowledge={handleApproveKnowledge}
+        onCompleteWithoutKnowledge={handleCompleteWithoutKnowledge}
+      />
+
+      {/* 완료 클레임 지식 베이스(Knowledge Base) 조회 및 재사용 모달 */}
+      <ClaimKnowledgeManagerModal
+        isOpen={isKnowledgeManagerOpen}
+        onClose={() => setIsKnowledgeManagerOpen(false)}
+        onApplyAsInvestigationPackage={handleUseAsInvestigationPackage}
+      />
+
+      {/* 8대 정보 상호 연계 통합 관리: 품질 지식센터 (Quality Knowledge Center) */}
+      <QualityKnowledgeCenterModal
+        isOpen={isKnowledgeCenterOpen}
+        onClose={() => setIsKnowledgeCenterOpen(false)}
+        initialTab={knowledgeCenterTab}
+        currentReport={report}
+        onApplyProduct={handleApplyProduct}
+        onApplyProcess={handleApplyProcess}
+        onApplyPreset={handleApplyPreset}
+        onApplyPhrase={handleApplyPhrase}
+        onCopyAsNewClaim={handleCopyAsNewClaim}
+        onUseAsInvestigationPackage={handleUseAsInvestigationPackage}
       />
 
       {/* Floating toast notification */}

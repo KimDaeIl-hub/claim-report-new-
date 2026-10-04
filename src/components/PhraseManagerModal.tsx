@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import {
   X,
   Plus,
@@ -18,6 +18,11 @@ import {
   FileText,
   Bookmark,
   Share2,
+  Zap,
+  SlidersHorizontal,
+  Layers,
+  Activity,
+  Filter,
 } from "lucide-react";
 import {
   StandardPhrase,
@@ -27,6 +32,18 @@ import {
 } from "../data/standardPhrases";
 import { loadAllPresets } from "../data/presets";
 import { ClaimPreset } from "../types";
+import {
+  CLAIM_TYPE_OPTIONS,
+  INVESTIGATION_ITEM_OPTIONS,
+  RESULT_TYPE_OPTIONS,
+  USAGE_LOCATION_OPTIONS,
+  PROCESS_OPTIONS,
+  PRODUCT_TYPE_OPTIONS,
+  getRecommendedPhrases,
+  normalizeClaimType,
+  normalizeInvestigationItem,
+  normalizeResultType,
+} from "../utils/situationPhraseRecommender";
 
 interface PhraseManagerModalProps {
   isOpen: boolean;
@@ -96,12 +113,30 @@ export function PhraseManagerModal({
   // Currently selected phrase for viewing/editing
   const [selectedPhraseId, setSelectedPhraseId] = useState<string | null>(null);
 
-  // Form states for edit / create
+  // 9대 상황 기반 구조화 연결정보 form states
+  const [formId, setFormId] = useState<string>("");
   const [formTitle, setFormTitle] = useState("");
   const [formContent, setFormContent] = useState("");
   const [formFieldKey, setFormFieldKey] = useState<string>("principle_visual");
   const [formCategory, setFormCategory] = useState<string>("general");
   const [formPresetId, setFormPresetId] = useState<string | undefined>(undefined);
+  const [formClaimType, setFormClaimType] = useState<string>("이물");
+  const [formInvestigationItem, setFormInvestigationItem] = useState<string>("보관품");
+  const [formResultType, setFormResultType] = useState<string>("이상 없음");
+  const [formUsageLocation, setFormUsageLocation] = useState<string>("분석 내용");
+  const [formRelatedProcess, setFormRelatedProcess] = useState<string>("공통");
+  const [formRelatedProductType, setFormRelatedProductType] = useState<string>("전체");
+  const [formIsActive, setFormIsActive] = useState<boolean>(true);
+
+  // 실시간 추천 시뮬레이터 (규칙 기반 추천 테스트) state
+  const [simClaimType, setSimClaimType] = useState<string>("이물");
+  const [simInvestigationItem, setSimInvestigationItem] = useState<string>("보관품");
+  const [simResultType, setSimResultType] = useState<string>("이상 없음");
+  const [showSimulator, setShowSimulator] = useState<boolean>(true);
+
+  // 추가 필터: 클레임 유형 및 조사 항목 필터
+  const [filterClaimType, setFilterClaimType] = useState<string>("all");
+  const [filterInvestigationItem, setFilterInvestigationItem] = useState<string>("all");
 
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -181,13 +216,26 @@ export function PhraseManagerModal({
       if (p.fieldKey !== selectedFieldFilter) return false;
     }
 
+    // Claim type filter
+    if (filterClaimType !== "all") {
+      if (p.claimType !== filterClaimType && p.claimType !== "전체") return false;
+    }
+
+    // Investigation item filter
+    if (filterInvestigationItem !== "all") {
+      if (p.investigationItem !== filterInvestigationItem && p.investigationItem !== "전체") return false;
+    }
+
     // Search query
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase().trim();
       const matchTitle = p.title.toLowerCase().includes(q);
       const matchContent = p.content.toLowerCase().includes(q);
       const matchKey = p.fieldKey.toLowerCase().includes(q);
-      if (!matchTitle && !matchContent && !matchKey) return false;
+      const matchId = p.id.toLowerCase().includes(q);
+      const matchClaim = p.claimType?.toLowerCase().includes(q);
+      const matchItem = p.investigationItem?.toLowerCase().includes(q);
+      if (!matchTitle && !matchContent && !matchKey && !matchId && !matchClaim && !matchItem) return false;
     }
 
     return true;
@@ -199,6 +247,16 @@ export function PhraseManagerModal({
     filteredPhrases[0] ||
     phrases[0] ||
     null;
+
+  // Real-time situation recommendation simulation (규칙 기반 추천 테스트)
+  const simulatedRecommendations = useMemo(() => {
+    return getRecommendedPhrases(phrases, {
+      claimType: simClaimType,
+      investigationItem: simInvestigationItem,
+      resultType: simResultType,
+      usageLocation: "분석 내용",
+    });
+  }, [phrases, simClaimType, simInvestigationItem, simResultType]);
 
   // Linked preset helper
   const getLinkedPreset = (presetId?: string) => {
@@ -214,15 +272,24 @@ export function PhraseManagerModal({
 
   const handleStartEdit = (phrase: StandardPhrase) => {
     setSelectedPhraseId(phrase.id);
+    setFormId(phrase.id);
     setFormTitle(phrase.title);
     setFormContent(phrase.content);
     setFormFieldKey(phrase.fieldKey);
     setFormCategory(phrase.category || "general");
     setFormPresetId(phrase.presetId);
+    setFormClaimType(phrase.claimType || "전체");
+    setFormInvestigationItem(phrase.investigationItem || "보관품");
+    setFormResultType(phrase.resultType || "이상 없음");
+    setFormUsageLocation(phrase.usageLocation || "분석 내용");
+    setFormRelatedProcess(phrase.relatedProcess || "공통");
+    setFormRelatedProductType(phrase.relatedProductType || "전체");
+    setFormIsActive(phrase.isActive !== false);
     setMode("edit");
   };
 
   const handleStartCreate = () => {
+    setFormId(`custom-ph-${Date.now()}`);
     setFormTitle("");
     setFormContent("");
     setFormFieldKey(
@@ -238,6 +305,13 @@ export function PhraseManagerModal({
         : "general"
     );
     setFormPresetId(undefined);
+    setFormClaimType("이물");
+    setFormInvestigationItem("보관품");
+    setFormResultType("이상 없음");
+    setFormUsageLocation("분석 내용");
+    setFormRelatedProcess("공통");
+    setFormRelatedProductType("전체");
+    setFormIsActive(true);
     setMode("create");
   };
 
@@ -268,6 +342,13 @@ export function PhraseManagerModal({
                 fieldKey: formFieldKey,
                 category: formCategory,
                 presetId: formPresetId,
+                claimType: formClaimType,
+                investigationItem: formInvestigationItem,
+                resultType: formResultType,
+                usageLocation: formUsageLocation,
+                relatedProcess: formRelatedProcess,
+                relatedProductType: formRelatedProductType,
+                isActive: formIsActive,
                 isCustom: true,
               }
             : p
@@ -280,6 +361,13 @@ export function PhraseManagerModal({
           content: formContent.trim(),
           category: formCategory,
           presetId: formPresetId,
+          claimType: formClaimType,
+          investigationItem: formInvestigationItem,
+          resultType: formResultType,
+          usageLocation: formUsageLocation,
+          relatedProcess: formRelatedProcess,
+          relatedProductType: formRelatedProductType,
+          isActive: formIsActive,
           isCustom: true,
         };
         updatedList = [...currentList, overridden];
@@ -288,10 +376,10 @@ export function PhraseManagerModal({
       saveAllPhrases(updatedList);
       setPhrases(updatedList);
       setMode("view");
-      showToast(`'${formTitle.trim()}' 상용구가 성공적으로 수정되었습니다.`);
+      showToast(`'${formTitle.trim()}' 상용구(연결정보 포함)가 성공적으로 저장되었습니다.`);
     } else if (mode === "create") {
       const newPhrase: StandardPhrase = {
-        id: `custom-ph-${Date.now()}`,
+        id: formId.trim() || `custom-ph-${Date.now()}`,
         fieldKey: formFieldKey,
         title: formTitle.trim(),
         content: formContent.trim(),
@@ -299,6 +387,13 @@ export function PhraseManagerModal({
           ? "test_principle"
           : formCategory,
         presetId: formPresetId,
+        claimType: formClaimType,
+        investigationItem: formInvestigationItem,
+        resultType: formResultType,
+        usageLocation: formUsageLocation,
+        relatedProcess: formRelatedProcess,
+        relatedProductType: formRelatedProductType,
+        isActive: formIsActive,
         isCustom: true,
       };
 
@@ -493,21 +588,57 @@ export function PhraseManagerModal({
                 })}
               </div>
 
-              {/* Field Filter Select */}
-              <div className="flex items-center gap-2 pt-1 border-t border-slate-100">
-                <span className="text-[11px] font-semibold text-slate-500 shrink-0">항목별:</span>
-                <select
-                  value={selectedFieldFilter}
-                  onChange={(e) => setSelectedFieldFilter(e.target.value)}
-                  className="flex-1 text-[11px] px-2 py-1 bg-slate-50 border border-slate-200 rounded-md focus:outline-none focus:ring-1 focus:ring-amber-500 text-slate-700 font-medium"
-                >
-                  <option value="all">전체 입력 항목 보기</option>
-                  {FIELD_OPTIONS.map((f) => (
-                    <option key={f.key} value={f.key}>
-                      {f.label}
-                    </option>
-                  ))}
-                </select>
+              {/* Field & Situation Filter Selects */}
+              <div className="space-y-1.5 pt-1 border-t border-slate-100">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[10px] font-semibold text-slate-500 shrink-0">항목:</span>
+                  <select
+                    value={selectedFieldFilter}
+                    onChange={(e) => setSelectedFieldFilter(e.target.value)}
+                    className="flex-1 text-[11px] px-2 py-1 bg-slate-50 border border-slate-200 rounded-md focus:outline-none focus:ring-1 focus:ring-amber-500 text-slate-700 font-medium truncate"
+                  >
+                    <option value="all">전체 입력 항목 보기</option>
+                    {FIELD_OPTIONS.map((f) => (
+                      <option key={f.key} value={f.key}>
+                        {f.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="grid grid-cols-2 gap-1.5">
+                  <div className="flex items-center gap-1">
+                    <span className="text-[10px] font-semibold text-slate-500 shrink-0">클레임:</span>
+                    <select
+                      value={filterClaimType}
+                      onChange={(e) => setFilterClaimType(e.target.value)}
+                      className="w-full text-[10px] px-1.5 py-0.5 bg-slate-50 border border-slate-200 rounded text-slate-700 font-medium"
+                    >
+                      <option value="all">클레임 전체</option>
+                      {CLAIM_TYPE_OPTIONS.filter((c) => c !== "전체").map((c) => (
+                        <option key={c} value={c}>
+                          {c}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="flex items-center gap-1">
+                    <span className="text-[10px] font-semibold text-slate-500 shrink-0">조사항목:</span>
+                    <select
+                      value={filterInvestigationItem}
+                      onChange={(e) => setFilterInvestigationItem(e.target.value)}
+                      className="w-full text-[10px] px-1.5 py-0.5 bg-slate-50 border border-slate-200 rounded text-slate-700 font-medium"
+                    >
+                      <option value="all">조사항목 전체</option>
+                      {INVESTIGATION_ITEM_OPTIONS.filter((it) => it !== "전체").map((it) => (
+                        <option key={it} value={it}>
+                          {it}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -549,6 +680,11 @@ export function PhraseManagerModal({
                           {fieldOpt?.group || phrase.fieldKey}
                         </span>
                         <div className="flex items-center gap-1 shrink-0">
+                          {phrase.isActive === false && (
+                            <span className="text-[9px] font-bold text-slate-500 bg-slate-100 px-1 py-0.5 rounded border border-slate-200">
+                              미사용
+                            </span>
+                          )}
                           {isLinkedPreset && (
                             <span className="text-[10px] font-semibold text-blue-700 bg-blue-50 px-1.5 py-0.5 rounded border border-blue-200 flex items-center gap-0.5">
                               <Sparkles className="w-2.5 h-2.5 text-blue-500" />
@@ -573,9 +709,28 @@ export function PhraseManagerModal({
                       </h4>
 
                       {/* Snippet */}
-                      <p className="text-xs text-slate-600 line-clamp-2 leading-relaxed mb-2.5">
+                      <p className="text-xs text-slate-600 line-clamp-2 leading-relaxed mb-2">
                         {phrase.content}
                       </p>
+
+                      {/* Situation Connection Chips */}
+                      <div className="flex flex-wrap items-center gap-1 mb-2">
+                        {phrase.claimType && (
+                          <span className="text-[9px] px-1.5 py-0.2 bg-blue-50 text-blue-700 border border-blue-200 rounded font-medium">
+                            클레임:{phrase.claimType}
+                          </span>
+                        )}
+                        {phrase.investigationItem && (
+                          <span className="text-[9px] px-1.5 py-0.2 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded font-medium">
+                            항목:{phrase.investigationItem}
+                          </span>
+                        )}
+                        {phrase.resultType && (
+                          <span className="text-[9px] px-1.5 py-0.2 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded font-medium">
+                            결과:{phrase.resultType}
+                          </span>
+                        )}
+                      </div>
 
                       {/* Card Footer */}
                       <div className="flex items-center justify-between pt-2 border-t border-slate-100 text-[11px]">
@@ -643,16 +798,246 @@ export function PhraseManagerModal({
                   )}
                 </div>
 
-                {/* Phrase Title */}
-                <div>
-                  <h3 className="text-lg sm:text-xl font-extrabold text-slate-900 tracking-tight leading-snug">
-                    {selectedPhrase.title}
-                  </h3>
-                  <p className="text-xs text-slate-500 mt-1">
-                    클레임 조사보고서 [
-                    {currentFieldOpt?.label.replace(/^[🔬🔍🏭📋✉️]\s*/, "") || selectedPhrase.fieldKey}
-                    ] 영역에 최적화된 공인 표준 문구입니다.
-                  </p>
+                {/* =================================================================== */}
+                {/* [상황 기반 자동 추천 구조화 연결정보 (9대 속성)]                      */}
+                {/* =================================================================== */}
+                <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 sm:p-5 space-y-3">
+                  <div className="flex items-center justify-between pb-2 border-b border-slate-200">
+                    <div className="flex items-center gap-2">
+                      <Zap className="w-4 h-4 text-amber-600" />
+                      <h4 className="text-xs sm:text-sm font-bold text-slate-900">
+                        상황 기반 자동 추천 구조화 연결정보 (9대 속성)
+                      </h4>
+                    </div>
+                    <span
+                      className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${
+                        selectedPhrase.isActive !== false
+                          ? "bg-emerald-50 text-emerald-700 border-emerald-300"
+                          : "bg-slate-100 text-slate-500 border-slate-300"
+                      }`}
+                    >
+                      {selectedPhrase.isActive !== false ? "● 추천 활성 (사용 중)" : "○ 추천 비활성 (미사용)"}
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 text-xs">
+                    {/* 1. 상용구 ID */}
+                    <div className="p-2.5 bg-white rounded-xl border border-slate-200">
+                      <span className="text-[10px] font-semibold text-slate-400 block mb-0.5">
+                        1. 상용구 ID
+                      </span>
+                      <span className="font-mono text-[11px] font-bold text-slate-800 break-all">
+                        {selectedPhrase.id}
+                      </span>
+                    </div>
+
+                    {/* 2. 클레임 유형 */}
+                    <div className="p-2.5 bg-white rounded-xl border border-slate-200">
+                      <span className="text-[10px] font-semibold text-slate-400 block mb-0.5">
+                        2. 클레임 유형
+                      </span>
+                      <span className="font-bold text-blue-700 bg-blue-50 px-1.5 py-0.5 rounded border border-blue-200 inline-block text-[11px]">
+                        {selectedPhrase.claimType || "전체"}
+                      </span>
+                    </div>
+
+                    {/* 3. 조사 항목 */}
+                    <div className="p-2.5 bg-white rounded-xl border border-slate-200">
+                      <span className="text-[10px] font-semibold text-slate-400 block mb-0.5">
+                        3. 조사 항목
+                      </span>
+                      <span className="font-bold text-indigo-700 bg-indigo-50 px-1.5 py-0.5 rounded border border-indigo-200 inline-block text-[11px]">
+                        {selectedPhrase.investigationItem || "전체"}
+                      </span>
+                    </div>
+
+                    {/* 4. 조사 결과 유형 */}
+                    <div className="p-2.5 bg-white rounded-xl border border-slate-200">
+                      <span className="text-[10px] font-semibold text-slate-400 block mb-0.5">
+                        4. 조사 결과 유형
+                      </span>
+                      <span className="font-bold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200 inline-block text-[11px]">
+                        {selectedPhrase.resultType || "전체"}
+                      </span>
+                    </div>
+
+                    {/* 5. 사용 위치 */}
+                    <div className="p-2.5 bg-white rounded-xl border border-slate-200">
+                      <span className="text-[10px] font-semibold text-slate-400 block mb-0.5">
+                        5. 사용 위치
+                      </span>
+                      <span className="font-semibold text-slate-800 text-[11px]">
+                        {selectedPhrase.usageLocation || "분석 내용"}
+                      </span>
+                    </div>
+
+                    {/* 6. 관련 공정 */}
+                    <div className="p-2.5 bg-white rounded-xl border border-slate-200">
+                      <span className="text-[10px] font-semibold text-slate-400 block mb-0.5">
+                        6. 관련 공정
+                      </span>
+                      <span className="font-semibold text-slate-800 text-[11px]">
+                        {selectedPhrase.relatedProcess || "공통"}
+                      </span>
+                    </div>
+
+                    {/* 7. 관련 제품 유형 */}
+                    <div className="p-2.5 bg-white rounded-xl border border-slate-200">
+                      <span className="text-[10px] font-semibold text-slate-400 block mb-0.5">
+                        7. 관련 제품 유형
+                      </span>
+                      <span className="font-semibold text-slate-800 text-[11px]">
+                        {selectedPhrase.relatedProductType || "전체"}
+                      </span>
+                    </div>
+
+                    {/* 8. 사용 여부 */}
+                    <div className="p-2.5 bg-white rounded-xl border border-slate-200">
+                      <span className="text-[10px] font-semibold text-slate-400 block mb-0.5">
+                        8. 사용 여부
+                      </span>
+                      <span className="font-bold text-[11px] text-slate-800">
+                        {selectedPhrase.isActive !== false ? "사용 중 (ON)" : "미사용 (OFF)"}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* =================================================================== */}
+                {/* [실시간 규칙 기반 상황 추천 시뮬레이터 (테스트기)]                    */}
+                {/* =================================================================== */}
+                <div className="bg-gradient-to-br from-indigo-900 via-slate-900 to-blue-950 text-white p-4 sm:p-5 rounded-2xl shadow-md border border-slate-800 space-y-3">
+                  <div className="flex items-center justify-between pb-2 border-b border-white/10">
+                    <div className="flex items-center gap-2">
+                      <Sparkles className="w-4 h-4 text-amber-400" />
+                      <h4 className="text-xs sm:text-sm font-bold text-white">
+                        상황 조건별 자동 추천 시뮬레이터 (규칙 기반 추천 테스트)
+                      </h4>
+                    </div>
+                    <span className="text-[10px] text-blue-200 font-medium">
+                      조건 일치 시 해당 상용구가 즉시 자동 추천됩니다
+                    </span>
+                  </div>
+
+                  {/* Simulator Selectors */}
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 text-xs">
+                    <div>
+                      <label className="block text-[10px] font-semibold text-slate-300 mb-1">
+                        클레임 유형 선택
+                      </label>
+                      <select
+                        value={simClaimType}
+                        onChange={(e) => setSimClaimType(e.target.value)}
+                        className="w-full text-xs px-2.5 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-white font-medium focus:ring-1 focus:ring-amber-400 focus:outline-none"
+                      >
+                        {CLAIM_TYPE_OPTIONS.map((c) => (
+                          <option key={c} value={c}>
+                            {c}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] font-semibold text-slate-300 mb-1">
+                        조사 항목 선택
+                      </label>
+                      <select
+                        value={simInvestigationItem}
+                        onChange={(e) => setSimInvestigationItem(e.target.value)}
+                        className="w-full text-xs px-2.5 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-white font-medium focus:ring-1 focus:ring-amber-400 focus:outline-none"
+                      >
+                        {INVESTIGATION_ITEM_OPTIONS.map((it) => (
+                          <option key={it} value={it}>
+                            {it}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] font-semibold text-slate-300 mb-1">
+                        조사 결과 선택
+                      </label>
+                      <select
+                        value={simResultType}
+                        onChange={(e) => setSimResultType(e.target.value)}
+                        className="w-full text-xs px-2.5 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-white font-medium focus:ring-1 focus:ring-amber-400 focus:outline-none"
+                      >
+                        {RESULT_TYPE_OPTIONS.map((r) => (
+                          <option key={r} value={r}>
+                            {r}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  {/* Simulator Output Box */}
+                  <div className="pt-1">
+                    <span className="text-[10px] font-semibold text-amber-300 block mb-1">
+                      🎯 추천 결과: {simulatedRecommendations.length}건 매칭 (클레임={simClaimType}, 항목={simInvestigationItem}, 결과={simResultType})
+                    </span>
+                    {simulatedRecommendations.length === 0 ? (
+                      <div className="p-3 bg-black/30 rounded-xl border border-white/10 text-xs text-slate-400 text-center italic">
+                        선택하신 조건에 정확히 일치하는 추천 상용구가 없습니다.
+                      </div>
+                    ) : (
+                      <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+                        {simulatedRecommendations.slice(0, 3).map((match, mIdx) => (
+                          <div
+                            key={`sim-${match.phrase.id}-${mIdx}`}
+                            className={`p-2.5 rounded-xl border transition-all text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2 ${
+                              match.phrase.id === selectedPhrase.id
+                                ? "bg-amber-500/20 border-amber-400/80 ring-1 ring-amber-400"
+                                : "bg-white/10 border-white/15 hover:bg-white/15"
+                            }`}
+                          >
+                            <div className="space-y-0.5 flex-1 min-w-0">
+                              <div className="flex items-center gap-1.5">
+                                <span className="font-bold text-white text-[11px] truncate">
+                                  {match.phrase.title}
+                                </span>
+                                {match.isExactMatch && (
+                                  <span className="text-[9px] px-1 py-0.2 bg-emerald-500 text-white rounded font-bold shrink-0">
+                                    정밀 일치
+                                  </span>
+                                )}
+                              </div>
+                              <p className="text-[11px] text-slate-200 line-clamp-2">
+                                {match.phrase.content}
+                              </p>
+                              <span className="text-[9px] text-slate-400">
+                                {match.matchReasons.join(" • ")}
+                              </span>
+                            </div>
+
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              <button
+                                type="button"
+                                onClick={() => handleSelectPhrase(match.phrase)}
+                                className="px-2 py-1 text-[10px] font-bold bg-white text-slate-900 hover:bg-amber-300 rounded-md transition-colors"
+                              >
+                                상세보기
+                              </button>
+                              {onApplyPhrase && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    onApplyPhrase(match.phrase.fieldKey, match.phrase.content);
+                                    showToast(`'${match.phrase.title}' 문구가 보고서에 적용되었습니다.`);
+                                  }}
+                                  className="px-2 py-1 text-[10px] font-bold bg-blue-500 text-white hover:bg-blue-400 rounded-md transition-colors"
+                                >
+                                  보고서 적용
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 </div>
 
                 {/* =================================================================== */}
@@ -847,6 +1232,173 @@ export function PhraseManagerModal({
                       placeholder="예: FT-IR 적외선 분광분석 이물 스펙트럼 판정 원리"
                       className="w-full text-xs sm:text-sm px-3.5 py-2.5 bg-slate-50 border border-slate-300 rounded-xl focus:bg-white focus:ring-2 focus:ring-amber-500 focus:outline-none font-semibold text-slate-900 transition-all placeholder:text-slate-400"
                     />
+                  </div>
+
+                  {/* ID & Active status */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 mb-1.5">
+                        상용구 ID <span className="text-slate-400 font-normal">(고유 식별자)</span>
+                      </label>
+                      <input
+                        type="text"
+                        value={formId}
+                        onChange={(e) => setFormId(e.target.value)}
+                        placeholder="예: phrase-retained-lot-normal"
+                        disabled={mode === "edit"}
+                        className="w-full text-xs px-3.5 py-2.5 bg-slate-50 border border-slate-300 rounded-xl font-mono text-slate-800 disabled:opacity-60"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 mb-1.5">
+                        상용구 사용 여부
+                      </label>
+                      <div className="flex items-center gap-3 pt-2">
+                        <label className="inline-flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="radio"
+                            name="phrase-active"
+                            checked={formIsActive}
+                            onChange={() => setFormIsActive(true)}
+                            className="text-blue-600 focus:ring-blue-500"
+                          />
+                          <span className="text-xs font-bold text-slate-800">사용 중 (활성)</span>
+                        </label>
+                        <label className="inline-flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="radio"
+                            name="phrase-active"
+                            checked={!formIsActive}
+                            onChange={() => setFormIsActive(false)}
+                            className="text-slate-500 focus:ring-slate-400"
+                          />
+                          <span className="text-xs font-semibold text-slate-500">미사용 (비활성)</span>
+                        </label>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Structured Situation Connection Attributes */}
+                  <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200 space-y-3">
+                    <div className="flex items-center gap-2 pb-1 border-b border-slate-200">
+                      <Zap className="w-4 h-4 text-amber-600" />
+                      <span className="text-xs font-bold text-slate-900">
+                        상황 기반 자동 추천 연결정보 설정
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      {/* 클레임 유형 */}
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                          클레임 유형
+                        </label>
+                        <select
+                          value={formClaimType}
+                          onChange={(e) => setFormClaimType(e.target.value)}
+                          className="w-full text-xs px-3 py-2 bg-white border border-slate-300 rounded-lg text-slate-800 font-semibold focus:ring-1 focus:ring-amber-500"
+                        >
+                          {CLAIM_TYPE_OPTIONS.map((c) => (
+                            <option key={c} value={c}>
+                              {c}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      {/* 조사 항목 */}
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                          조사 항목
+                        </label>
+                        <select
+                          value={formInvestigationItem}
+                          onChange={(e) => setFormInvestigationItem(e.target.value)}
+                          className="w-full text-xs px-3 py-2 bg-white border border-slate-300 rounded-lg text-slate-800 font-semibold focus:ring-1 focus:ring-amber-500"
+                        >
+                          {INVESTIGATION_ITEM_OPTIONS.map((it) => (
+                            <option key={it} value={it}>
+                              {it}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      {/* 조사 결과 유형 */}
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                          조사 결과 유형
+                        </label>
+                        <select
+                          value={formResultType}
+                          onChange={(e) => setFormResultType(e.target.value)}
+                          className="w-full text-xs px-3 py-2 bg-white border border-slate-300 rounded-lg text-slate-800 font-semibold focus:ring-1 focus:ring-amber-500"
+                        >
+                          {RESULT_TYPE_OPTIONS.map((r) => (
+                            <option key={r} value={r}>
+                              {r}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      {/* 사용 위치 */}
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                          사용 위치
+                        </label>
+                        <select
+                          value={formUsageLocation}
+                          onChange={(e) => setFormUsageLocation(e.target.value)}
+                          className="w-full text-xs px-3 py-2 bg-white border border-slate-300 rounded-lg text-slate-800 focus:ring-1 focus:ring-amber-500"
+                        >
+                          {USAGE_LOCATION_OPTIONS.map((u) => (
+                            <option key={u} value={u}>
+                              {u}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      {/* 관련 공정 */}
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                          관련 공정
+                        </label>
+                        <select
+                          value={formRelatedProcess}
+                          onChange={(e) => setFormRelatedProcess(e.target.value)}
+                          className="w-full text-xs px-3 py-2 bg-white border border-slate-300 rounded-lg text-slate-800 focus:ring-1 focus:ring-amber-500"
+                        >
+                          {PROCESS_OPTIONS.map((p) => (
+                            <option key={p} value={p}>
+                              {p}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      {/* 관련 제품 유형 */}
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                          관련 제품 유형
+                        </label>
+                        <select
+                          value={formRelatedProductType}
+                          onChange={(e) => setFormRelatedProductType(e.target.value)}
+                          className="w-full text-xs px-3 py-2 bg-white border border-slate-300 rounded-lg text-slate-800 focus:ring-1 focus:ring-amber-500"
+                        >
+                          {PRODUCT_TYPE_OPTIONS.map((pt) => (
+                            <option key={pt} value={pt}>
+                              {pt}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
                   </div>
 
                   {/* Target Field & Category */}

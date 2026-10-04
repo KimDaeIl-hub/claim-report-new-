@@ -24,6 +24,7 @@ interface ReportListDrawerProps {
 const STORAGE_SAVED_REPORTS_KEY = "food_qc_saved_reports_v1";
 
 export function getSavedReports(): ReportData[] {
+  if (typeof window === "undefined" || !window.localStorage) return [];
   try {
     const raw = localStorage.getItem(STORAGE_SAVED_REPORTS_KEY);
     if (!raw) return [];
@@ -38,6 +39,7 @@ export function getSavedReports(): ReportData[] {
 }
 
 export function saveReportToArchive(report: ReportData): void {
+  if (typeof window === "undefined" || !window.localStorage) return;
   const existing = getSavedReports();
   const index = existing.findIndex((r) => r.id === report.id);
   let updated: ReportData[];

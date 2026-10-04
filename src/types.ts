@@ -73,6 +73,7 @@ export interface ReportData {
     channel: string;
     claimDetails: string;
     customerPhotos: PhotoAttachment[];
+    claimType?: string;
   };
 
   // [2] 접수 제품 정보
@@ -83,6 +84,7 @@ export interface ReportData {
     expiryDate: string;
     manufacturer: string;
     packageType: string;
+    productType?: string;
     manufacturerType?: "internal" | "oem";
     factoryId?: string;
     productId?: string;
@@ -378,6 +380,15 @@ export interface StandardPhrase {
   subCategory?: string;
   presetId?: string; // optional linked preset ID
   isCustom?: boolean;
+
+  // [상황 기반 자동 추천 구조화 연결정보]
+  claimType?: string;          // 클레임 유형 (예: "이물", "변질", "누액", "표시오류", "내용량", "전체")
+  investigationItem?: string;  // 조사 항목 (예: "보관품", "현품", "제조기록", "품질검사", "제조공정", "원부자재", "원인판정", "재발방지", "결론/사과", "시험원리", "전체")
+  resultType?: string;         // 조사 결과 유형 (예: "이상 없음", "이상 확인", "확인 불가", "적합", "부적합", "해당 없음", "전체")
+  usageLocation?: string;      // 사용 위치 (예: "분석 내용", "보관품 점검", "제조기록 점검", "품질검사", "현품 외관", "현품 분석", "원인 분석", "재발방지", "사과문")
+  relatedProcess?: string;     // 관련 공정 (예: "배합", "여과", "UHT", "저장", "충전", "캡핑", "후살균", "포장", "공통")
+  relatedProductType?: string; // 관련 제품 유형 (예: "혼합음료", "다류(액상차)", "건기식", "전체")
+  isActive?: boolean;          // 사용 여부 (true: 사용 중, false: 미사용)
 }
 
 export interface SavedReportSummary {
@@ -563,3 +574,79 @@ export interface InvestigationPackageConfig {
   recommendedChecklist?: string[];
   autoStandardPhrases?: string[];
 }
+
+/**
+ * 조사자가 입력하는 기본 정보
+ */
+export interface InvestigationPackageInput {
+  productId?: string;
+  productName: string;
+  lotNumber: string;
+  claimType: string; // "foreign" | "spoilage" | "leak" | "label" | "volume" | "etc"
+  claimSubCategory?: string; // 예: "검은색 이물", "유리 이물", "산패", "캡 헛돎"
+  customerClaim: string; // 소비자 주장 내용
+  hasSample: boolean; // 현품 확보 여부: true(현품 확보), false(미확보 - 사진/진술 접수)
+}
+
+/**
+ * 자동 구성된 조사 항목 단위
+ */
+export interface InvestigationPackageItem {
+  id: string;
+  category: "sample" | "retained" | "record" | "qc" | "process" | "material" | "cause" | "conclusion" | "custom";
+  name: string; // 예: "소비자 제공 현품", "동일 제조번호 보관품", "제조기록", "품질검사", "제조공정", "원부자재", "원인 검토", "결론"
+  isRequired: boolean; // 필수 조사 여부
+  isChecked: boolean; // 조사자가 체크/해제 가능
+  method: string; // 기본 조사방법
+  targetInspectionPoints: string[]; // 추천 조사대상 포인트 (원인 미확정, 조사자 현장 검증 대상)
+  notes?: string;
+}
+
+/**
+ * 최종 생성된 종합 조사 패키지 데이터 모델
+ */
+export interface InvestigationPackage {
+  input: InvestigationPackageInput;
+  productMaster: {
+    productName: string;
+    subProductType: string;
+    packageType: string;
+    manufacturer: string;
+    manufactureLine: string;
+    containerType?: string;
+    volume?: string;
+    productCode?: string;
+  };
+  processMaster: {
+    presetId?: string;
+    lineName: string;
+    processFlow: string;
+    processSteps: string[];
+    keyEquipments: string[];
+    filtrationAnalysis?: string;
+    cleaningAnalysis?: string;
+    criticalControlPoint?: string;
+    stepsDetail?: ProcessStepMaster[];
+  };
+  claimTypeMaster: {
+    claimTypeId: string;
+    claimTypeName: string;
+    description: string;
+    badgeColor: string;
+    suggestedTestTitle?: string;
+    suggestedTestMethod?: string;
+  };
+  investigationItems: InvestigationPackageItem[];
+  recommendedTargets: string[]; // "추천 조사대상" (확정된 원인이 아님을 명확히 구분)
+  recommendedPhrases?: StandardPhrase[]; // 현재 상황에 맞는 추천 상용구 목록
+  recommendedProcesses?: {
+    stepName: string;
+    equipmentName: string;
+    focusPoint: string;
+    verificationMethod: string;
+  }[]; // 추천 조사 공정 목록
+  similarPastClaims?: any[]; // 과거 유사 사례 목록
+  packageSummary: string; // "조사 패키지가 구성되었습니다."
+  createdAt: string;
+}
+
