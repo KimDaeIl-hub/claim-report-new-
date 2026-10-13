@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import { ReportData, PhotoAttachment, ProcessStepMaster } from "../types";
 import { maskCustomerName } from "../utils/masking";
+import { stripInternalPrefix } from "../utils/displayName";
 import { getLevel1Number, getLevel2Char } from "../utils/numbering";
 import { KwangdongLogo } from "./KwangdongLogo";
 import {
@@ -29,6 +30,7 @@ import {
 } from "../utils/investigationStatus";
 import { loadAllProcessSteps } from "../data/processStepMaster";
 import { ProcessStepDetailModal } from "./ProcessStepDetailModal";
+import { buildAutoReportTitle, isAutoReportTitle } from "../utils/reportTitle";
 
 interface ReportPreviewPaneProps {
   report: ReportData;
@@ -150,7 +152,7 @@ export function ReportPreviewPane({
           <button
             type="button"
             onClick={() => handleSavePhotoCaption(p.id, editingCaptionText)}
-            className="px-1.5 py-0.5 bg-blue-600 hover:bg-blue-700 text-white rounded text-[10px] font-bold shrink-0"
+            className="px-1.5 py-0.5 bg-blue-600 hover:bg-blue-700 text-white rounded text-[10px] font-bold shrink-0 print:hidden"
           >
             저장
           </button>
@@ -251,14 +253,41 @@ export function ReportPreviewPane({
       !p.url.includes("placeholder")
     );
 
-  const customerPhotos = (report.customerClaim?.customerPhotos || []).filter(isUserPhoto);
-  const att1Photos = (report.attachments?.attachment1Photos || []).filter(isUserPhoto);
-  const att2Photos = (
-    (report.lotHistory?.retainedSamplePhotos && report.lotHistory.retainedSamplePhotos.length > 0)
-      ? report.lotHistory.retainedSamplePhotos
-      : (report.attachments?.attachment2Photos || [])
-  ).filter(isUserPhoto);
-  const att3Photos = (report.attachments?.attachment3Photos || []).filter(isUserPhoto);
+  // 출력 대상 사진만 (출력 제외 설정은 관리 목록에만 보관, 기존 데이터 미지정 시 포함)
+  const visiblePhotos = (list: PhotoAttachment[] | undefined) =>
+    (list || []).filter(isUserPhoto).filter((p) => (p.showInReport ?? true) !== false);
+
+  // 표시 크기 → 이미지 높이·셀 배치 (원본 비율 유지, 출력 레이아웃에만 적용)
+  const photoHeightClass = (p: PhotoAttachment, base: string) => {
+    switch (p.displaySize) {
+      case "S":
+        return "h-24";
+      case "L":
+        return "h-56";
+      case "XL":
+        return "h-72";
+      case "M":
+      default:
+        return base;
+    }
+  };
+  const photoSpanClass = (p: PhotoAttachment) =>
+    p.displaySize === "XL"
+      ? "col-span-full"
+      : p.displaySize === "L"
+        ? "sm:col-span-2"
+        : "";
+
+  const photoCategoryLabel = (p: PhotoAttachment) =>
+    (p.category || "").trim() || "미분류";
+
+  // 동일 사진의 A4 중복 출력 방지: 고객 사진→[1] 접수 개요, 보관품→[5] Lot 이력,
+  // 첨부 1/2/3 버킷→[8] 첨부 문서 (각 사진은 한 곳에만 출력)
+  const customerPhotos = visiblePhotos(report.customerClaim?.customerPhotos);
+  const retainedPhotos = visiblePhotos(report.lotHistory?.retainedSamplePhotos);
+  const att1Photos = visiblePhotos(report.attachments?.attachment1Photos);
+  const att2Photos = visiblePhotos(report.attachments?.attachment2Photos);
+  const att3Photos = visiblePhotos(report.attachments?.attachment3Photos);
   const hasAttachments = customerPhotos.length > 0 || att1Photos.length > 0 || att2Photos.length > 0 || att3Photos.length > 0;
 
   if (hasAttachments) {
@@ -428,6 +457,52 @@ export function ReportPreviewPane({
         </div>
       </div>
 
+      {/* Report Title Editor (No-print, linked live to A4 title below) */}
+      <div className="no-print shrink-0 bg-white border-b border-slate-200 px-4 py-2 z-10">
+        <div className="max-w-4xl w-full mx-auto flex flex-wrap items-center gap-2">
+          <span className="text-xs font-bold text-slate-700 shrink-0 flex items-center gap-1">
+            <Edit3 className="w-3.5 h-3.5 text-slate-500" />
+            보고서 제목
+          </span>
+          {isAutoReportTitle(report.title, report.productInfo?.productName, report.productInfo?.claimTypeId) ? (
+            <span className="px-1.5 py-0.2 rounded text-[10px] font-bold bg-blue-100 text-blue-800 border border-blue-200 shrink-0">
+              자동 생성
+            </span>
+          ) : (
+            <span className="px-1.5 py-0.2 rounded text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-300 shrink-0">
+              직접 수정됨
+            </span>
+          )}
+          <input
+            id="input-report-title"
+            type="text"
+            value={report.title || ""}
+            onChange={(e) => onUpdateReport?.({ ...report, title: e.target.value })}
+            placeholder="보고서 제목을 입력하세요 (비우면 자동 제목 적용)"
+            className="flex-1 min-w-[200px] text-xs px-3 py-1.5 border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500 font-semibold text-slate-900"
+          />
+          {onUpdateReport && (
+            <button
+              type="button"
+              id="btn-restore-auto-title"
+              onClick={() =>
+                onUpdateReport({
+                  ...report,
+                  title: buildAutoReportTitle(
+                    report.productInfo?.productName,
+                    report.productInfo?.claimTypeId
+                  ),
+                })
+              }
+              className="px-2.5 py-1.5 text-[11px] font-bold text-slate-600 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 border border-slate-300 rounded-lg transition-colors shrink-0"
+              title="제품명·클레임 유형 기준 자동 제목으로 되돌리기"
+            >
+              자동 제목으로 복원
+            </button>
+          )}
+        </div>
+      </div>
+
       {/* Warning banner for unexamined items (Screen only) */}
       {unexaminedItems.length > 0 && (
         <div
@@ -546,12 +621,12 @@ export function ReportPreviewPane({
                 </div>
 
                 {/* Document Title Banner */}
-                <div className="py-2.5 px-3 bg-slate-900 text-white rounded flex items-baseline gap-2 mb-4 shadow-2xs">
+                <div className="doc-title-banner py-2.5 px-3 bg-slate-900 text-white rounded flex items-baseline gap-2 mb-4 shadow-2xs">
                   <span className="text-xs font-bold tracking-wider text-slate-300 shrink-0">
                     제 &nbsp; 목 :
                   </span>
                   <span className="text-sm sm:text-base font-bold text-white tracking-tight">
-                    {report.title ? (report.title.startsWith("“") || report.title.startsWith('"') ? report.title : `“${report.title}”`) : `“${report.productInfo.productName || "아이스웨일 플레인"}” 소비자 클레임 발생에 따른 조사 보고의 건.`}
+                    {report.title ? (report.title.startsWith("“") || report.title.startsWith('"') ? report.title : `“${report.title}”`) : `“${stripInternalPrefix(report.productInfo.productName) || "아이스웨일 플레인"}” 소비자 클레임 발생에 따른 조사 보고의 건.`}
                   </span>
                 </div>
 
@@ -625,14 +700,17 @@ export function ReportPreviewPane({
                               {customerPhotos.map((p, idx) => (
                                 <div
                                   key={p.id || idx}
-                                  className="border border-slate-300 rounded p-1.5 bg-white text-center shadow-2xs"
+                                  className={`border border-slate-300 rounded p-1.5 bg-white text-center shadow-2xs ${photoSpanClass(p)}`}
                                 >
                                   <img
                                     src={p.url}
                                     alt={p.caption || `고객 접수 사진 ${idx + 1}`}
-                                    className="w-full h-28 sm:h-32 object-contain bg-slate-50 rounded"
+                                    className={`w-full ${photoHeightClass(p, "h-28 sm:h-32")} object-contain bg-slate-50 rounded`}
                                   />
-                                  <p className="text-[11px] text-slate-700 font-medium mt-1 truncate">
+                                  <p className="text-[10px] font-bold text-blue-800 mt-1">
+                                    {photoCategoryLabel(p)}
+                                  </p>
+                                  <p className="text-[11px] text-slate-700 font-medium mt-0.5 truncate">
                                     {p.caption || `고객 접수 사진 #${idx + 1}`}
                                   </p>
                                 </div>
@@ -659,7 +737,7 @@ export function ReportPreviewPane({
                           제 품 명
                         </th>
                         <td className="p-2 font-bold text-slate-950">
-                          {report.productInfo.productName}
+                          {stripInternalPrefix(report.productInfo.productName)}
                         </td>
                         <th className="w-24 bg-slate-100 p-2 text-left font-semibold text-slate-700 border-r border-slate-200">
                           제조번호(Lot)
@@ -682,7 +760,7 @@ export function ReportPreviewPane({
                         <th className="bg-slate-100 p-2 text-left font-semibold text-slate-700 border-r border-slate-200">
                           제조 공장
                         </th>
-                        <td className="p-2 text-slate-900">{report.productInfo.manufacturer}</td>
+                        <td className="p-2 text-slate-900">{stripInternalPrefix(report.productInfo.manufacturer)}</td>
                         <th className="bg-slate-100 p-2 text-left font-semibold text-slate-700 border-r border-slate-200">
                           포장 형태
                         </th>
@@ -695,7 +773,7 @@ export function ReportPreviewPane({
 
               {/* [3] 정밀 과학 분석 결과 - High Readability & Consumer Friendly Card System */}
               {hasAnalysisItems && (
-                <section className="space-y-2.5 print-avoid-break">
+                <section className="space-y-2.5">
                   <h2 className="text-xs font-bold text-slate-950 border-b-2 border-slate-800 pb-1 flex items-center justify-between">
                     <span>{getSectionNumber("scientific_analysis")} 정밀 과학 분석 결과</span>
                     <span className="text-[10px] text-slate-500 font-normal">
@@ -706,7 +784,7 @@ export function ReportPreviewPane({
                   <div className="space-y-2.5 text-xs">
                     {/* Visual Inspection Card */}
                     {!ar.visualInspection.skipped && (
-                      <div className="border border-slate-300 rounded-lg p-3 bg-white shadow-2xs">
+                      <div className="border border-slate-300 rounded-lg p-3 bg-white shadow-2xs print-avoid-break">
                         <div className="flex items-center justify-between border-b border-slate-200 pb-1.5 mb-2">
                           <h3 className="font-bold text-slate-950 flex items-center gap-1.5">
                             <span className="w-4 h-4 rounded bg-slate-900 text-white text-[10px] font-mono flex items-center justify-center font-bold">
@@ -714,20 +792,6 @@ export function ReportPreviewPane({
                             </span>
                             <span>현품 외관 및 이물 육안 확인 결과</span>
                           </h3>
-                          <div className="flex items-center gap-1.5">
-                            {ar.visualInspection.status && (
-                              <span
-                                className={`text-[10px] px-2 py-0.5 rounded border font-bold ${getInvestigationStatusBadgeStyle(
-                                  ar.visualInspection.status
-                                )}`}
-                              >
-                                {ar.visualInspection.status}
-                              </span>
-                            )}
-                            <span className="text-[10px] px-2 py-0.5 bg-slate-100 text-slate-700 rounded border border-slate-200 font-medium">
-                              공인 표준광원 D65 관능 검사
-                            </span>
-                          </div>
                         </div>
                         <div className="space-y-1 text-slate-800 leading-relaxed pl-1">
                           <p>
@@ -762,7 +826,7 @@ export function ReportPreviewPane({
 
                     {/* Magnifier Inspection Card */}
                     {!ar.magnifierInspection.skipped && (
-                      <div className="border border-slate-300 rounded-lg p-3 bg-white shadow-2xs">
+                      <div className="border border-slate-300 rounded-lg p-3 bg-white shadow-2xs print-avoid-break">
                         <div className="flex items-center justify-between border-b border-slate-200 pb-1.5 mb-2">
                           <h3 className="font-bold text-slate-950 flex items-center gap-1.5">
                             <span className="w-4 h-4 rounded bg-slate-900 text-white text-[10px] font-mono flex items-center justify-center font-bold">
@@ -770,20 +834,6 @@ export function ReportPreviewPane({
                             </span>
                             <span>확대경 정밀 조사 결과 ({ar.magnifierInspection.magnification || "정밀 관찰"})</span>
                           </h3>
-                          <div className="flex items-center gap-1.5">
-                            {ar.magnifierInspection.status && (
-                              <span
-                                className={`text-[10px] px-2 py-0.5 rounded border font-bold ${getInvestigationStatusBadgeStyle(
-                                  ar.magnifierInspection.status
-                                )}`}
-                              >
-                                {ar.magnifierInspection.status}
-                              </span>
-                            )}
-                            <span className="text-[10px] px-2 py-0.5 bg-slate-100 text-slate-700 rounded border border-slate-200 font-medium">
-                              정밀 광학 렌즈계 표면 분석
-                            </span>
-                          </div>
                         </div>
                         <div className="text-slate-800 leading-relaxed pl-1">
                           <p>
@@ -812,7 +862,7 @@ export function ReportPreviewPane({
 
                     {/* Optical Microscope Card */}
                     {!ar.opticalMicroscope.skipped && (
-                      <div className="border border-slate-300 rounded-lg p-3 bg-white shadow-2xs">
+                      <div className="border border-slate-300 rounded-lg p-3 bg-white shadow-2xs print-avoid-break">
                         <div className="flex items-center justify-between border-b border-slate-200 pb-1.5 mb-2">
                           <h3 className="font-bold text-slate-950 flex items-center gap-1.5">
                             <span className="w-4 h-4 rounded bg-slate-900 text-white text-[10px] font-mono flex items-center justify-center font-bold">
@@ -820,20 +870,6 @@ export function ReportPreviewPane({
                             </span>
                             <span>광학 현미경 미세조직 분석 ({ar.opticalMicroscope.magnification || "고배율 관찰"})</span>
                           </h3>
-                          <div className="flex items-center gap-1.5">
-                            {ar.opticalMicroscope.status && (
-                              <span
-                                className={`text-[10px] px-2 py-0.5 rounded border font-bold ${getInvestigationStatusBadgeStyle(
-                                  ar.opticalMicroscope.status
-                                )}`}
-                              >
-                                {ar.opticalMicroscope.status}
-                              </span>
-                            )}
-                            <span className="text-[10px] px-2 py-0.5 bg-slate-100 text-slate-700 rounded border border-slate-200 font-medium">
-                              Optical Microscopy (200x)
-                            </span>
-                          </div>
                         </div>
                         <div className="text-slate-800 leading-relaxed pl-1">
                           <p>
@@ -862,7 +898,7 @@ export function ReportPreviewPane({
 
                     {/* FT-IR Analysis Card */}
                     {!ar.ftirAnalysis.skipped && (
-                      <div className="border border-slate-300 rounded-lg p-3 bg-white shadow-2xs">
+                      <div className="border border-slate-300 rounded-lg p-3 bg-white shadow-2xs print-avoid-break">
                         <div className="flex items-center justify-between border-b border-slate-200 pb-1.5 mb-2">
                           <h3 className="font-bold text-slate-950 flex items-center gap-1.5">
                             <span className="w-4 h-4 rounded bg-slate-900 text-white text-[10px] font-mono flex items-center justify-center font-bold">
@@ -870,20 +906,6 @@ export function ReportPreviewPane({
                             </span>
                             <span>FT-IR(적외선 분광분석) 정성 분석 결과</span>
                           </h3>
-                          <div className="flex items-center gap-1.5">
-                            {ar.ftirAnalysis.status && (
-                              <span
-                                className={`text-[10px] px-2 py-0.5 rounded border font-bold ${getInvestigationStatusBadgeStyle(
-                                  ar.ftirAnalysis.status
-                                )}`}
-                              >
-                                {ar.ftirAnalysis.status}
-                              </span>
-                            )}
-                            <span className="text-[10px] px-2 py-0.5 bg-blue-50 text-blue-800 rounded border border-blue-200 font-bold">
-                              FT-IR ATR 분광 동정법
-                            </span>
-                          </div>
                         </div>
 
                         <div className="space-y-2 pl-1">
@@ -929,7 +951,7 @@ export function ReportPreviewPane({
 
                     {/* XRF Analysis Card */}
                     {!ar.xrfAnalysis.skipped && (
-                      <div className="border border-slate-300 rounded-lg p-3 bg-white shadow-2xs">
+                      <div className="border border-slate-300 rounded-lg p-3 bg-white shadow-2xs print-avoid-break">
                         <div className="flex items-center justify-between border-b border-slate-200 pb-1.5 mb-2">
                           <h3 className="font-bold text-slate-950 flex items-center gap-1.5">
                             <span className="w-4 h-4 rounded bg-slate-900 text-white text-[10px] font-mono flex items-center justify-center font-bold">
@@ -937,20 +959,6 @@ export function ReportPreviewPane({
                             </span>
                             <span>XRF(X선 형광분석) 무기 및 금속 원소 분석</span>
                           </h3>
-                          <div className="flex items-center gap-1.5">
-                            {ar.xrfAnalysis.status && (
-                              <span
-                                className={`text-[10px] px-2 py-0.5 rounded border font-bold ${getInvestigationStatusBadgeStyle(
-                                  ar.xrfAnalysis.status
-                                )}`}
-                              >
-                                {ar.xrfAnalysis.status}
-                              </span>
-                            )}
-                            <span className="text-[10px] px-2 py-0.5 bg-slate-100 text-slate-700 rounded border border-slate-200 font-medium">
-                              X-Ray Fluorescence
-                            </span>
-                          </div>
                         </div>
                         <div className="space-y-1.5 text-slate-800 leading-relaxed pl-1">
                           {ar.xrfAnalysis.elementsRatio && (
@@ -983,7 +991,7 @@ export function ReportPreviewPane({
 
                     {/* Physicochemical Analysis Table Card */}
                     {!ar.physicochemicalAnalysis.skipped && (
-                      <div className="border border-slate-300 rounded-lg p-3 bg-white shadow-2xs">
+                      <div className="border border-slate-300 rounded-lg p-3 bg-white shadow-2xs print-avoid-break">
                         <div className="flex items-center justify-between border-b border-slate-200 pb-1.5 mb-2">
                           <h3 className="font-bold text-slate-950 flex items-center gap-1.5">
                             <span className="w-4 h-4 rounded bg-slate-900 text-white text-[10px] flex items-center justify-center font-bold">
@@ -991,20 +999,6 @@ export function ReportPreviewPane({
                             </span>
                             <span>이화학적 특성 비교 분석</span>
                           </h3>
-                          <div className="flex items-center gap-1.5">
-                            {ar.physicochemicalAnalysis.status && (
-                              <span
-                                className={`text-[10px] px-2 py-0.5 rounded border font-bold ${getInvestigationStatusBadgeStyle(
-                                  ar.physicochemicalAnalysis.status
-                                )}`}
-                              >
-                                {ar.physicochemicalAnalysis.status}
-                              </span>
-                            )}
-                            <span className="text-[10px] px-2 py-0.5 bg-slate-100 text-slate-700 rounded border border-slate-200 font-medium">
-                              식품공전 일반시험법
-                            </span>
-                          </div>
                         </div>
 
                         <div className="overflow-x-auto border border-slate-300 rounded mb-2">
@@ -1086,7 +1080,7 @@ export function ReportPreviewPane({
 
                     {/* Catalase Test Card */}
                     {!ar.catalaseTest.skipped && (
-                      <div className="border border-slate-300 rounded-lg p-3 bg-white shadow-2xs">
+                      <div className="border border-slate-300 rounded-lg p-3 bg-white shadow-2xs print-avoid-break">
                         <div className="flex items-center justify-between border-b border-slate-200 pb-1.5 mb-2">
                           <h3 className="font-bold text-slate-950 flex items-center gap-1.5">
                             <span className="w-4 h-4 rounded bg-slate-900 text-white text-[10px] font-mono flex items-center justify-center font-bold">
@@ -1094,20 +1088,6 @@ export function ReportPreviewPane({
                             </span>
                             <span>카탈라아제(Catalase) 효소 활성 및 생물/열처리 반응 시험</span>
                           </h3>
-                          <div className="flex items-center gap-1.5">
-                            {ar.catalaseTest.status && (
-                              <span
-                                className={`text-[10px] px-2 py-0.5 rounded border font-bold ${getInvestigationStatusBadgeStyle(
-                                  ar.catalaseTest.status
-                                )}`}
-                              >
-                                {ar.catalaseTest.status}
-                              </span>
-                            )}
-                            <span className="text-[10px] px-2 py-0.5 bg-slate-100 text-slate-700 rounded border border-slate-200 font-medium">
-                              3% H2O2 효소 분해 반응법
-                            </span>
-                          </div>
                         </div>
                         <div className="space-y-1 text-slate-800 leading-relaxed pl-1">
                           <p>
@@ -1141,7 +1121,7 @@ export function ReportPreviewPane({
                     {(ar.additionalTests || []).map((test) => {
                       if (test.skipped) return null;
                       return (
-                        <div key={test.id} className="border border-slate-300 rounded-lg p-3 bg-white shadow-2xs">
+                        <div key={test.id} className="border border-slate-300 rounded-lg p-3 bg-white shadow-2xs print-avoid-break">
                           <div className="flex items-center justify-between border-b border-slate-200 pb-1.5 mb-2">
                             <h3 className="font-bold text-slate-950 flex items-center gap-1.5">
                               <span className="w-4 h-4 rounded bg-slate-900 text-white text-[10px] font-mono flex items-center justify-center font-bold">
@@ -1171,14 +1151,14 @@ export function ReportPreviewPane({
 
               {/* [4] 제조공정 점검 및 관리 포인트 */}
               {!report.manufacturingProcess.skipped && (
-                <section className="space-y-2 print-avoid-break">
+                <section className="space-y-2">
                   <h2 className="text-xs font-bold text-slate-950 border-b-2 border-slate-800 pb-1">
                     {getSectionNumber("manufacturing_process")} 제조공정 점검 및 관리 포인트
                   </h2>
 
                   {/* Flow Steps Diagram */}
                   {(report.manufacturingProcess.processSteps || []).length > 0 && (
-                    <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg">
+                    <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg print-avoid-break">
                       <div className="flex items-center justify-between mb-2">
                         <span className="text-[11px] font-bold text-slate-700">
                           [전체 제조공정 흐름도 및 관리 기준점]
@@ -1247,7 +1227,7 @@ export function ReportPreviewPane({
 
               {/* [5] 동일 Lot 제조 및 품질검사 이력 */}
               {!report.lotHistory.skipped && (
-                <section className="space-y-2 print-avoid-break">
+                <section className="space-y-2">
                   <h2 className="text-xs font-bold text-slate-950 border-b-2 border-slate-800 pb-1">
                     {getSectionNumber("lot_history")} 동일 제조번호(Lot: {report.productInfo.lotNumber}) 품질검사 이력
                   </h2>
@@ -1345,22 +1325,25 @@ export function ReportPreviewPane({
                                 ).displayText
                               }
                             </p>
-                            {att2Photos.length > 0 && (
+                            {retainedPhotos.length > 0 && (
                               <div className="mt-2.5 pt-2 border-t border-slate-200">
                                 <span className="block text-[11px] font-semibold text-slate-700 mb-1.5">
                                   [자사 공장 보관 검체(동일 Lot) 외관 및 성상 확인 사진]
                                 </span>
                                 <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                                  {att2Photos.map((p, idx) => (
+                                  {retainedPhotos.map((p, idx) => (
                                     <div
                                       key={p.id || idx}
-                                      className="border border-slate-300 rounded p-1.5 bg-white text-center shadow-2xs"
+                                      className={`border border-slate-300 rounded p-1.5 bg-white text-center shadow-2xs ${photoSpanClass(p)}`}
                                     >
                                       <img
                                         src={p.url}
                                         alt={p.caption || `동일 Lot 보관품 사진 ${idx + 1}`}
-                                        className="w-full h-28 object-contain bg-slate-50 rounded"
+                                        className={`w-full ${photoHeightClass(p, "h-28")} object-contain bg-slate-50 rounded`}
                                       />
+                                      <p className="text-[10px] font-bold text-blue-800 mt-1">
+                                        {photoCategoryLabel(p)}
+                                      </p>
                                       {renderEditableCaption(p, `보관품 사진 #${idx + 1}`)}
                                     </div>
                                   ))}
@@ -1400,7 +1383,7 @@ export function ReportPreviewPane({
 
               {/* [6] 종합 원인 판정 및 재발방지대책 */}
               {!report.rootCauseAndActions.skipped && (
-                <section className="space-y-2 print-avoid-break">
+                <section className="space-y-2">
                   <h2 className="text-xs font-bold text-slate-950 border-b-2 border-slate-800 pb-1">
                     {getSectionNumber("root_cause")} 종합 원인 판정 및 재발방지대책
                   </h2>
@@ -1449,7 +1432,7 @@ export function ReportPreviewPane({
               )}
 
               {/* [7] 조사 결론 및 고객 안내 */}
-              <section className="space-y-2 print-avoid-break">
+              <section className="space-y-2">
                 <h2 className="text-xs font-bold text-slate-950 border-b-2 border-slate-800 pb-1">
                   {getSectionNumber("conclusion")} 조사 결론 및 고객 안내
                 </h2>
@@ -1474,34 +1457,12 @@ export function ReportPreviewPane({
 
               {/* [8] 첨부 사진 및 데이터 그리드 (If any) */}
               {hasAttachments && (
-                <section className="space-y-3 print-page-break">
+                <section className="space-y-3">
                   <h2 className="text-xs font-bold text-slate-950 border-b-2 border-slate-800 pb-1">
                     {getSectionNumber("attachments")} 첨부 문서 (현품, 스펙트럼 및 공정 사진)
                   </h2>
 
-                  {/* Customer Claim Intake Photos */}
-                  {customerPhotos.length > 0 && (
-                    <div className="space-y-1">
-                      <span className="text-xs font-semibold text-slate-800">
-                        [첨부: 고객 인입 사진] 클레임 접수 시 소비자가 제공한 현품/문제 부위 사진
-                      </span>
-                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-                        {customerPhotos.map((p, idx) => (
-                          <div
-                            key={p.id || idx}
-                            className="border border-slate-300 rounded-lg p-1.5 bg-white text-center"
-                          >
-                            <img
-                              src={p.url}
-                              alt={p.caption || `고객 인입 사진 ${idx + 1}`}
-                              className="w-full h-36 object-contain bg-slate-50 rounded"
-                            />
-                            {renderEditableCaption(p, `고객 인입 사진 #${idx + 1}`)}
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
+                  {/* 고객 인입 사진은 본문 [1] 접수 개요에만 출력 (첨부 영역 중복 제외) */}
 
                   {/* Attachment 1 Photos: Sample / Foreign object / FTIR */}
                   {att1Photos.length > 0 && (
@@ -1513,13 +1474,16 @@ export function ReportPreviewPane({
                         {att1Photos.map((p) => (
                           <div
                             key={p.id}
-                            className="border border-slate-300 rounded-lg p-1.5 bg-white text-center"
+                            className={`border border-slate-300 rounded-lg p-1.5 bg-white text-center ${photoSpanClass(p)}`}
                           >
                             <img
                               src={p.url}
                               alt={p.caption}
-                              className="w-full h-36 object-contain bg-slate-50 rounded"
+                              className={`w-full ${photoHeightClass(p, "h-36")} object-contain bg-slate-50 rounded`}
                             />
+                            <p className="text-[10px] font-bold text-blue-800 mt-1">
+                              {photoCategoryLabel(p)}
+                            </p>
                             {renderEditableCaption(p, `현품/이물 분석 사진`)}
                           </div>
                         ))}
@@ -1537,13 +1501,16 @@ export function ReportPreviewPane({
                         {att2Photos.map((p) => (
                           <div
                             key={p.id}
-                            className="border border-slate-300 rounded-lg p-1.5 bg-white text-center"
+                            className={`border border-slate-300 rounded-lg p-1.5 bg-white text-center ${photoSpanClass(p)}`}
                           >
                             <img
                               src={p.url}
                               alt={p.caption}
-                              className="w-full h-36 object-contain bg-slate-50 rounded"
+                              className={`w-full ${photoHeightClass(p, "h-36")} object-contain bg-slate-50 rounded`}
                             />
+                            <p className="text-[10px] font-bold text-blue-800 mt-1">
+                              {photoCategoryLabel(p)}
+                            </p>
                             {renderEditableCaption(p, `동일 Lot 보관품 사진`)}
                           </div>
                         ))}
@@ -1561,13 +1528,16 @@ export function ReportPreviewPane({
                         {att3Photos.map((p) => (
                           <div
                             key={p.id}
-                            className="border border-slate-300 rounded-lg p-1.5 bg-white text-center"
+                            className={`border border-slate-300 rounded-lg p-1.5 bg-white text-center ${photoSpanClass(p)}`}
                           >
                             <img
                               src={p.url}
                               alt={p.caption}
-                              className="w-full h-36 object-contain bg-slate-50 rounded"
+                              className={`w-full ${photoHeightClass(p, "h-36")} object-contain bg-slate-50 rounded`}
                             />
+                            <p className="text-[10px] font-bold text-blue-800 mt-1">
+                              {photoCategoryLabel(p)}
+                            </p>
                             {renderEditableCaption(p, `제조공정 점검 사진`, p.stepName)}
                           </div>
                         ))}
@@ -1577,7 +1547,8 @@ export function ReportPreviewPane({
                 </section>
               )}
 
-              {/* Official Sign-off & Kwangdong Seal Block */}
+              {/* Official Sign-off & Kwangdong Seal Block (경미 클레임 생략 설정 시 제외) */}
+              {!report.hideTeamLeaderSign && (
               <div className="pt-8 pb-4 flex flex-col sm:flex-row items-center justify-center gap-4 sm:gap-6 print-avoid-break border-t border-slate-200 mt-6">
                 <div className="text-center sm:text-left">
                   <span className="text-base sm:text-lg font-bold text-slate-950 tracking-[0.15em] sm:tracking-[0.25em] doc-serif select-none">
@@ -1615,6 +1586,7 @@ export function ReportPreviewPane({
                   </div>
                 </div>
               </div>
+              )}
             </div>
 
             {/* Document Legal Footer Disclaimer */}

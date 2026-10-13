@@ -152,7 +152,9 @@ export function applyInvestigationStructureToReport(
   // =========================================================================
   // [1] 조사 항목 구성 및 방법 적용 (과학 정밀 분석)
   // * 원칙: 항목 활성화 여부(skipped), 시험 원리(includePrinciple, principleText),
-  //         시험 규격 및 배율만 복사하고 '결과 텍스트'와 '상태'는 신규 조사 상태로 리셋.
+  //         시험 규격 및 배율만 복사하고 '결과 텍스트'와 '상태'는 신규 조사 상태로 둠.
+  // * 단, 현재 보고서에 이미 입력된 조사 결과·상태·사진은 절대 삭제하지 않고 유지하며,
+  //         비어 있는 항목만 구조 기본값으로 초기화함 (작성 내용 보호).
   // =========================================================================
 
   // 1-1. 육안 검사
@@ -164,14 +166,14 @@ export function applyInvestigationStructureToReport(
       pastAnalysis.visualInspection?.principleText ||
       next.analysisResults.visualInspection.principleText ||
       "공인 표준 광원(D65 기준) 하에서 시료의 외형 성상, 잔여량, 캡 실링 상태 및 이물의 형태적 특성을 정밀 육안 검사합니다.",
-    // 결과 및 상태는 리셋
+    // 결과 및 상태: 현재 입력 유지, 비어 있을 때만 초기 문구
     sampleCondition:
       next.analysisResults.visualInspection.sampleCondition ||
       "소비자 제공 회수 현품 입고 완료. 포장 밀봉 상태 및 내용물 검증 진행.",
     foreignObjectAppearance:
       next.analysisResults.visualInspection.foreignObjectAppearance ||
       `접수 클레임 내용: ${currentReport.customerClaim.claimDetails || "현품 이물/이상 유무 정밀 분석 대기"}`,
-    status: "미실시",
+    status: next.analysisResults.visualInspection.status || "미실시",
   };
 
   // 1-2. 정밀 확대경 검사
@@ -183,8 +185,8 @@ export function applyInvestigationStructureToReport(
     principleText:
       pastAnalysis.magnifierInspection?.principleText ||
       next.analysisResults.magnifierInspection.principleText,
-    result: "", // 과거 결과 미복사
-    status: "미실시",
+    result: next.analysisResults.magnifierInspection.result || "", // 과거 결과 미복사 + 현재 입력 유지
+    status: next.analysisResults.magnifierInspection.status || "미실시",
   };
 
   // 1-3. 광학 현미경 검사
@@ -196,8 +198,8 @@ export function applyInvestigationStructureToReport(
     principleText:
       pastAnalysis.opticalMicroscope?.principleText ||
       next.analysisResults.opticalMicroscope.principleText,
-    result: "", // 과거 결과 미복사
-    status: "미실시",
+    result: next.analysisResults.opticalMicroscope.result || "", // 과거 결과 미복사 + 현재 입력 유지
+    status: next.analysisResults.opticalMicroscope.status || "미실시",
   };
 
   // 1-4. FT-IR 적외선 분광 광도 분석
@@ -208,11 +210,11 @@ export function applyInvestigationStructureToReport(
     principleText:
       pastAnalysis.ftirAnalysis?.principleText ||
       next.analysisResults.ftirAnalysis.principleText,
-    // 과거 스펙트럼 분석결과 미복사
-    summary: "",
-    matchedMaterial: "",
-    similarity: "",
-    status: "미실시",
+    // 과거 스펙트럼 분석결과 미복사 + 현재 입력 유지
+    summary: next.analysisResults.ftirAnalysis.summary || "",
+    matchedMaterial: next.analysisResults.ftirAnalysis.matchedMaterial || "",
+    similarity: next.analysisResults.ftirAnalysis.similarity || "",
+    status: next.analysisResults.ftirAnalysis.status || "미실시",
   };
 
   // 1-5. XRF 원소 분석
@@ -223,13 +225,15 @@ export function applyInvestigationStructureToReport(
     principleText:
       pastAnalysis.xrfAnalysis?.principleText ||
       next.analysisResults.xrfAnalysis.principleText,
-    elementsRatio: "",
-    summary: "",
-    status: "미실시",
+    elementsRatio: next.analysisResults.xrfAnalysis.elementsRatio || "",
+    summary: next.analysisResults.xrfAnalysis.summary || "",
+    status: next.analysisResults.xrfAnalysis.status || "미실시",
   };
 
   // 1-6. 이화학 분석 (항목 구조와 기준치만 복사, 측정치는 빈 값으로 새로 입력)
-  if (!pastAnalysis.physicochemicalAnalysis?.skipped && pastAnalysis.physicochemicalAnalysis?.items) {
+  // 단, 현재 보고서에 이미 측정 항목이 있으면 유지 (작성 내용 보호)
+  const currentPhysioItems = next.analysisResults.physicochemicalAnalysis.items || [];
+  if (!pastAnalysis.physicochemicalAnalysis?.skipped && pastAnalysis.physicochemicalAnalysis?.items && currentPhysioItems.length === 0) {
     const copiedStructureItems: PhysicochemicalItem[] = pastAnalysis.physicochemicalAnalysis.items.map(
       (item, idx) => ({
         id: `pc-item-${Date.now()}-${idx}`,
@@ -250,7 +254,7 @@ export function applyInvestigationStructureToReport(
       includePrinciple: pastAnalysis.physicochemicalAnalysis.includePrinciple ?? false,
       principleText: pastAnalysis.physicochemicalAnalysis.principleText || "",
       items: copiedStructureItems,
-      summary: "", // 총평 리셋
+      summary: next.analysisResults.physicochemicalAnalysis.summary || "", // 총평: 현재 입력 유지
     };
   } else {
     next.analysisResults.physicochemicalAnalysis = {
@@ -267,13 +271,15 @@ export function applyInvestigationStructureToReport(
     skipped: pastAnalysis.catalaseTest?.skipped ?? true,
     includePrinciple: pastAnalysis.catalaseTest?.includePrinciple ?? false,
     principleText: pastAnalysis.catalaseTest?.principleText || "",
-    reactionDetail: "",
-    resultJudgement: "",
-    status: "미실시",
+    reactionDetail: next.analysisResults.catalaseTest.reactionDetail || "",
+    resultJudgement: next.analysisResults.catalaseTest.resultJudgement || "",
+    status: next.analysisResults.catalaseTest.status || "미실시",
   };
 
   // 1-8. 추가 특수 분석 항목 (항목 구성과 원리만 복사, 결과는 빈 값)
-  if (pastAnalysis.additionalTests && pastAnalysis.additionalTests.length > 0) {
+  // 단, 현재 보고서에 이미 항목이 있으면 유지 (작성 내용 보호)
+  const currentAdditionalTests = next.analysisResults.additionalTests || [];
+  if (pastAnalysis.additionalTests && pastAnalysis.additionalTests.length > 0 && currentAdditionalTests.length === 0) {
     next.analysisResults.additionalTests = pastAnalysis.additionalTests.map((t, idx) => ({
       id: `add-test-${Date.now()}-${idx}`,
       title: t.title,
@@ -302,11 +308,12 @@ export function applyInvestigationStructureToReport(
       criticalControlPoint: pastMfg.criticalControlPoint || next.manufacturingProcess.criticalControlPoint,
       filtrationAnalysis: pastMfg.filtrationAnalysis || next.manufacturingProcess.filtrationAnalysis,
       cleaningAnalysis: pastMfg.cleaningAnalysis || next.manufacturingProcess.cleaningAnalysis,
-      // 공정 조사결과 텍스트 및 상태는 리셋 (새로 조사)
-      processInvestigationResult: "no_issue",
-      processInvestigationNote: "",
-      filtrationStatus: "미실시",
-      cleaningStatus: "미실시",
+      // 공정 조사결과 텍스트 및 상태: 현재 입력 유지, 비어 있을 때만 초기화 (새로 조사)
+      processInvestigationResult:
+        next.manufacturingProcess.processInvestigationResult || "no_issue",
+      processInvestigationNote: next.manufacturingProcess.processInvestigationNote || "",
+      filtrationStatus: next.manufacturingProcess.filtrationStatus || "미실시",
+      cleaningStatus: next.manufacturingProcess.cleaningStatus || "미실시",
     };
   }
 
@@ -319,41 +326,48 @@ export function applyInvestigationStructureToReport(
     next.lotHistory = {
       ...next.lotHistory,
       skipped: pastLot.skipped ?? false,
-      // 안내 문구만 초기화하고 결과 판정은 미실시
-      retainedSampleCheck: "",
-      productionLogNote: "",
-      qualityTestRecord: "",
-      rawMaterialCheck: "",
-      retainedSampleStatus: "미실시",
-      productionLogStatus: "미실시",
-      qualityTestStatus: "미실시",
-      rawMaterialStatus: "미실시",
-      retainedSamplePhotos: [], // 과거 사진 미복사
-      priorClaimsCount: "0건",
+      // 결과 텍스트·상태·사진: 현재 입력 유지, 비어 있을 때만 초기화 (작성 내용 보호)
+      retainedSampleCheck: next.lotHistory.retainedSampleCheck || "",
+      productionLogNote: next.lotHistory.productionLogNote || "",
+      qualityTestRecord: next.lotHistory.qualityTestRecord || "",
+      rawMaterialCheck: next.lotHistory.rawMaterialCheck || "",
+      retainedSampleStatus: next.lotHistory.retainedSampleStatus || "미실시",
+      productionLogStatus: next.lotHistory.productionLogStatus || "미실시",
+      qualityTestStatus: next.lotHistory.qualityTestStatus || "미실시",
+      rawMaterialStatus: next.lotHistory.rawMaterialStatus || "미실시",
+      retainedSamplePhotos: next.lotHistory.retainedSamplePhotos || [], // 과거 사진 미복사 + 현재 사진 유지
+      priorClaimsCount: next.lotHistory.priorClaimsCount || "0건",
     };
   }
 
   // =========================================================================
-  // [4] 과거 조사결과, 원인, 결론, 조치계획 일체 리셋 (복사 금지 원칙)
+  // [4] 과거 조사결과, 원인, 결론, 조치계획은 자동 복사하지 않음 (복사 금지 원칙)
+  //     + 현재 보고서에 이미 입력된 원인·결론도 삭제하지 않고 유지 (작성 내용 보호)
   // =========================================================================
   next.rootCauseAndActions = {
     ...next.rootCauseAndActions,
-    rootCause: "",
-    preventiveMeasures: "",
+    rootCause: next.rootCauseAndActions.rootCause || "",
+    preventiveMeasures: next.rootCauseAndActions.preventiveMeasures || "",
   };
 
   next.conclusion = {
-    summaryPoints: [],
-    apologyText: "",
-    closingRemarks: "",
+    summaryPoints: next.conclusion.summaryPoints && next.conclusion.summaryPoints.length > 0
+      ? next.conclusion.summaryPoints
+      : [],
+    apologyText: next.conclusion.apologyText || "",
+    closingRemarks: next.conclusion.closingRemarks || "",
   };
 
   next.investigationResults = {
-    manufacturingRecordResult: "no_issue",
-    storageSampleResult: "normal",
-    qualityInspectionResult: "pass",
-    processInvestigationResult: "no_issue",
-    materialInvestigationResult: "no_issue",
+    manufacturingRecordResult:
+      next.investigationResults?.manufacturingRecordResult || "no_issue",
+    storageSampleResult: next.investigationResults?.storageSampleResult || "normal",
+    qualityInspectionResult:
+      next.investigationResults?.qualityInspectionResult || "pass",
+    processInvestigationResult:
+      next.investigationResults?.processInvestigationResult || "no_issue",
+    materialInvestigationResult:
+      next.investigationResults?.materialInvestigationResult || "no_issue",
   };
 
   return next;

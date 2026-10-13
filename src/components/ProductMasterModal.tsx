@@ -22,6 +22,7 @@ import {
   Info,
 } from "lucide-react";
 import { ProductMaster, ManufacturerMaster, ManufactureLineMaster } from "../types";
+import { stripInternalPrefix } from "../utils/displayName";
 import {
   loadAllProducts,
   saveProduct,
@@ -490,14 +491,14 @@ export function ProductMasterModal({
                             <span className="text-[10px] text-slate-500 font-medium">{p.productType}</span>
                           </div>
 
-                          <h4 className="text-xs font-bold text-slate-900 mt-1 truncate">{p.productName}</h4>
+                          <h4 className="text-xs font-bold text-slate-900 mt-1 truncate">{stripInternalPrefix(p.productName)}</h4>
 
                           <div className="flex items-center gap-2 text-[11px] text-slate-500 mt-1 truncate">
                             <span>{p.packageType}</span>
                             <span>·</span>
                             <span>{p.volume}</span>
                             <span>·</span>
-                            <span className="truncate">{p.manufacturer}</span>
+                            <span className="truncate">{stripInternalPrefix(p.manufacturer)}</span>
                           </div>
                         </div>
 

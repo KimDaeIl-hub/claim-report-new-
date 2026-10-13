@@ -17,6 +17,7 @@ import {
   Info,
 } from "lucide-react";
 import { ReportData } from "../types";
+import { stripInternalPrefix } from "../utils/displayName";
 import { PastClaimItem } from "../utils/pastClaimManager";
 import { SimilarClaimRecommendation } from "../utils/similarClaimRecommender";
 import { ImportInvestigationStructureModal } from "./ImportInvestigationStructureModal";
@@ -69,7 +70,7 @@ export function PastClaimDetailViewModal({
                 </span>
               </div>
               <h3 className="text-base sm:text-lg font-bold text-white truncate mt-1">
-                {rep.title || past.productName}
+                {stripInternalPrefix(rep.title) || stripInternalPrefix(past.productName)}
               </h3>
             </div>
           </div>
@@ -123,7 +124,7 @@ export function PastClaimDetailViewModal({
               </div>
               <div>
                 <span className="text-slate-400 block">제조라인:</span>
-                <span className="font-bold text-slate-800">{recommendation.manufactureLine}</span>
+                <span className="font-bold text-slate-800">{stripInternalPrefix(recommendation.manufactureLine)}</span>
               </div>
               <div>
                 <span className="text-slate-400 block">관련공정:</span>
@@ -146,7 +147,7 @@ export function PastClaimDetailViewModal({
               <div className="space-y-1 text-[11px] leading-relaxed">
                 <div>
                   <span className="text-slate-500">제품명: </span>
-                  <strong className="text-slate-900">{rep.productInfo?.productName}</strong>
+                  <strong className="text-slate-900">{stripInternalPrefix(rep.productInfo?.productName || "")}</strong>
                 </div>
                 <div>
                   <span className="text-slate-500">제조번호: </span>
@@ -154,7 +155,7 @@ export function PastClaimDetailViewModal({
                 </div>
                 <div>
                   <span className="text-slate-500">제조처: </span>
-                  <span>{rep.productInfo?.manufacturer}</span>
+                  <span>{stripInternalPrefix(rep.productInfo?.manufacturer)}</span>
                 </div>
                 <div>
                   <span className="text-slate-500">용기형태: </span>
@@ -300,7 +301,7 @@ export function PastClaimDetailViewModal({
         pastReport={rep}
         currentReport={currentReport}
         currentContext={currentContext}
-        claimTitle={`${recommendation.productName} (${recommendation.claimSummary})`}
+        claimTitle={`${stripInternalPrefix(recommendation.productName)} (${recommendation.claimSummary})`}
         claimDate={recommendation.dateFormatted}
         onConfirm={(pastRep) => {
           if (onUseAsInvestigationPackage) {

@@ -110,4 +110,50 @@
     page-break-inside: avoid !important;
     break-inside: avoid !important;
   }
+
+  /* 제목·섹션 제목 고아 방지: 제목만 페이지 하단에 남지 않도록 다음 블록과 결합 */
+  #printable-report h2,
+  #printable-report h3 {
+    page-break-after: avoid !important;
+    break-after: avoid !important;
+  }
+
+  /* 보고서 제목 배너: 내부 분리 방지 + 아래 기본 정보와 결합 */
+  #printable-report .doc-title-banner {
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+    page-break-after: avoid !important;
+    break-after: avoid !important;
+  }
+
+  /* 표: 헤더 반복, 행 분리 방지, 긴 문자열 영역 내 줄바꿈 */
+  #printable-report thead {
+    display: table-header-group !important;
+  }
+
+  #printable-report tr {
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+  }
+
+  #printable-report td,
+  #printable-report th {
+    overflow-wrap: anywhere !important;
+  }
+
+  /* 사진: 영역 초과 방지, 셀 단위(사진+캡션) 분리 방지 */
+  #printable-report img {
+    max-width: 100% !important;
+  }
+
+  #printable-report .grid > div {
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+  }
+
+  /* 첨부 그룹 소제목: 그리드와 분리되지 않도록 다음 블록과 결합 */
+  #printable-report section > div > span:first-child {
+    page-break-after: avoid !important;
+    break-after: avoid !important;
+  }
 }

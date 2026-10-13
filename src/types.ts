@@ -44,6 +44,19 @@ export interface PhotoAttachment {
   url: string;
   caption: string;
   stepName?: string;
+  /** 사용자 지정 분류명 (클레임별 자유 입력, 미입력 시 "미분류" 표시, 원본 불변) */
+  category?: string;
+  /** 표시 크기 (원본 비율 유지, 출력 레이아웃에만 적용, 원본 데이터 불변) */
+  displaySize?: "S" | "M" | "L" | "XL";
+  /** A4 보고서 출력 포함 여부 (false면 관리 목록에만 보관, 삭제 아님, 미지정 시 true) */
+  showInReport?: boolean;
+  /**
+   * 탭 연결 (조사 화면 참고용, 출력 여부와 별개 설정)
+   * - "intake": 접수/현품 탭에서 참고 표시
+   * - "quality": 품질 조사 탭에서 참고 표시
+   * - 미지정(레거시) 시 버킷 기본값 적용, 빈 배열이면 연결 없음
+   */
+  linkedSections?: ("intake" | "quality")[];
 }
 
 export interface ReportData {
@@ -61,6 +74,8 @@ export interface ReportData {
   teamLeader: string;
   sealType: 'seal' | 'signature' | 'none';
   customSealUrl?: string;
+  /** 경미한 클레임 시 팀장 서명란 생략 (true면 A4 서명 블록 미표시, 미지정·레거시는 표시) */
+  hideTeamLeaderSign?: boolean;
   greetingIntro?: string;
 
   // [1] 고객 및 클레임 접수 정보

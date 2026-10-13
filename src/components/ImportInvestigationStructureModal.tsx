@@ -89,7 +89,7 @@ export function ImportInvestigationStructureModal({
             <div>
               <div className="flex items-center gap-1.5 flex-wrap">
                 <span className="text-[10px] font-bold text-amber-300 bg-amber-950/70 border border-amber-400/30 px-2 py-0.5 rounded-full">
-                  조사 패키지 구조 적용
+                  과거 사례에서 가져오기
                 </span>
                 {claimDate && (
                   <span className="text-[10px] text-slate-300">

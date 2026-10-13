@@ -15,6 +15,7 @@ import {
   Info,
 } from "lucide-react";
 import { ReportData } from "../types";
+import { stripInternalPrefix } from "../utils/displayName";
 import {
   CurrentClaimContext,
   SimilarClaimRecommendation,
@@ -33,6 +34,8 @@ interface SimilarClaimRecommendationCardProps {
   onApplyMethods?: (options: MethodImportOptions, recommendation: SimilarClaimRecommendation) => void;
   onUseAsInvestigationPackage?: (pastReport: ReportData) => void;
   onOpenManualSearch?: () => void;
+  /** 기본 펼침 여부 (작성 화면에서는 접힘 권장, 패키지 모달에서는 펼침) */
+  defaultExpanded?: boolean;
 }
 
 export function SimilarClaimRecommendationCard({
@@ -41,8 +44,9 @@ export function SimilarClaimRecommendationCard({
   onApplyMethods,
   onUseAsInvestigationPackage,
   onOpenManualSearch,
+  defaultExpanded = true,
 }: SimilarClaimRecommendationCardProps) {
-  const [isExpanded, setIsExpanded] = useState<boolean>(true);
+  const [isExpanded, setIsExpanded] = useState<boolean>(defaultExpanded);
   const [viewDetailTarget, setViewDetailTarget] = useState<SimilarClaimRecommendation | null>(null);
   const [importMethodTarget, setImportMethodTarget] = useState<SimilarClaimRecommendation | null>(null);
   const [importStructureTarget, setImportStructureTarget] = useState<SimilarClaimRecommendation | null>(null);
@@ -86,9 +90,15 @@ export function SimilarClaimRecommendationCard({
                   (완료된 과거 클레임 11대 항목 구조적 유사도 자동 추천)
                 </span>
               </h3>
-              {hasStrongMatch && (
-                <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-emerald-500/20 text-emerald-300 border border-emerald-400/40 animate-pulse">
-                  유사 사례 {recommendations.length}건 발견
+              {recommendations.length > 0 && (
+                <span
+                  className={`px-2 py-0.5 rounded-full text-[10px] font-black border ${
+                    hasStrongMatch
+                      ? "bg-emerald-500/20 text-emerald-300 border-emerald-400/40 animate-pulse"
+                      : "bg-white/10 text-slate-300 border-white/20"
+                  }`}
+                >
+                  과거 유사 사례 {recommendations.length}건{isExpanded ? "" : " 보기"}
                 </span>
               )}
             </div>
@@ -200,7 +210,7 @@ export function SimilarClaimRecommendationCard({
                     <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5 p-3 bg-slate-50/80 rounded-xl border border-slate-200/80 text-xs">
                       <div>
                         <span className="text-slate-400 font-medium block text-[10px]">제품</span>
-                        <strong className="text-slate-900 text-xs">{rec.productName}</strong>
+                        <strong className="text-slate-900 text-xs">{stripInternalPrefix(rec.productName)}</strong>
                       </div>
 
                       <div>
@@ -210,7 +220,7 @@ export function SimilarClaimRecommendationCard({
 
                       <div>
                         <span className="text-slate-400 font-medium block text-[10px]">제조라인</span>
-                        <span className="font-semibold text-slate-800 text-xs">{rec.manufactureLine}</span>
+                        <span className="font-semibold text-slate-800 text-xs">{stripInternalPrefix(rec.manufactureLine)}</span>
                       </div>
 
                       <div>

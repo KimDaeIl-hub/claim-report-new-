@@ -30,6 +30,7 @@ import {
   Info,
 } from "lucide-react";
 import { ReportData } from "../types";
+import { stripInternalPrefix } from "../utils/displayName";
 import {
   PastClaimItem,
   PastClaimSearchFilters,
@@ -259,7 +260,7 @@ export function PastClaimSearchModal({
                 </button>
                 <div className="h-4 w-px bg-slate-200 mx-1" />
                 <span className="text-xs font-bold text-slate-900 truncate">
-                  {selectedClaim.report.docNumber || "문서번호 미지정"} · {selectedClaim.productName}
+                  {selectedClaim.report.docNumber || "문서번호 미지정"} · {stripInternalPrefix(selectedClaim.productName)}
                 </span>
               </div>
 
@@ -320,7 +321,7 @@ export function PastClaimSearchModal({
                 <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 text-xs">
                   <div className="p-2.5 bg-slate-50 rounded-lg border border-slate-200">
                     <span className="text-[11px] text-slate-500 block mb-0.5">제품명</span>
-                    <strong className="text-slate-900">{selectedClaim.productName}</strong>
+                    <strong className="text-slate-900">{stripInternalPrefix(selectedClaim.productName)}</strong>
                   </div>
                   <div className="p-2.5 bg-slate-50 rounded-lg border border-slate-200">
                     <span className="text-[11px] text-slate-500 block mb-0.5">제조번호 (LOT)</span>
@@ -338,7 +339,7 @@ export function PastClaimSearchModal({
                   </div>
                   <div className="p-2.5 bg-slate-50 rounded-lg border border-slate-200">
                     <span className="text-[11px] text-slate-500 block mb-0.5">제조공장 / 생산라인</span>
-                    <span className="text-slate-900 font-semibold">{selectedClaim.manufactureLine}</span>
+                    <span className="text-slate-900 font-semibold">{stripInternalPrefix(selectedClaim.manufactureLine)}</span>
                   </div>
                   <div className="p-2.5 bg-slate-50 rounded-lg border border-slate-200">
                     <span className="text-[11px] text-slate-500 block mb-0.5">조사 담당자</span>
@@ -713,10 +714,10 @@ export function PastClaimSearchModal({
                       {/* 제품명 및 생산라인 */}
                       <div className="flex items-center gap-2">
                         <h4 className="text-sm font-bold text-slate-900 group-hover:text-blue-700 transition-colors">
-                          {item.productName}
+                          {stripInternalPrefix(item.productName)}
                         </h4>
                         <span className="text-slate-300">|</span>
-                        <span className="text-xs text-slate-600 truncate">{item.manufactureLine}</span>
+                        <span className="text-xs text-slate-600 truncate">{stripInternalPrefix(item.manufactureLine)}</span>
                         <span className="text-slate-300">|</span>
                         <span className="text-xs text-slate-500 truncate">조사자: {item.researcherName}</span>
                       </div>
@@ -782,7 +783,7 @@ export function PastClaimSearchModal({
                     </span>
                   </div>
                   <p className="text-[11px] text-slate-300">
-                    기준 클레임: <span className="font-mono text-blue-300 font-bold">{selectedClaim.report.docNumber || selectedClaim.id}</span> · {selectedClaim.productName}
+                    기준 클레임: <span className="font-mono text-blue-300 font-bold">{selectedClaim.report.docNumber || selectedClaim.id}</span> · {stripInternalPrefix(selectedClaim.productName)}
                   </p>
                 </div>
               </div>

@@ -31,7 +31,7 @@ export const INITIAL_REPORT_DATA: ReportData = {
 
   productInfo: {
     productName: "병 제품 (100ml)",
-    lotNumber: "LOT-26F20-V1",
+    lotNumber: "",
     manufactureDate: "2026-06-15",
     expiryDate: "2027-06-14",
     manufacturer: "광동제약 평택공장 음료 1호 유리병 충전라인",

@@ -148,11 +148,13 @@ export function ReportListDrawer({
     e.target.value = "";
   };
 
+  // 제목 필드가 없는 구형 보관 데이터도 오류 없이 검색 (읽기 전용 방어 접근)
   const filteredReports = reports.filter((r) => {
-    const matchName = r.productInfo.productName.toLowerCase().includes(searchTerm.toLowerCase());
-    const matchCustomer = r.customerClaim.customerName.toLowerCase().includes(searchTerm.toLowerCase());
-    const matchDoc = r.docNumber.toLowerCase().includes(searchTerm.toLowerCase());
-    const matchTitle = r.title.toLowerCase().includes(searchTerm.toLowerCase());
+    const q = searchTerm.toLowerCase();
+    const matchName = (r.productInfo?.productName || "").toLowerCase().includes(q);
+    const matchCustomer = (r.customerClaim?.customerName || "").toLowerCase().includes(q);
+    const matchDoc = (r.docNumber || "").toLowerCase().includes(q);
+    const matchTitle = (r.title || "").toLowerCase().includes(q);
     return matchName || matchCustomer || matchDoc || matchTitle;
   });
 

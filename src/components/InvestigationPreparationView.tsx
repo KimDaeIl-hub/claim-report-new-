@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import {
   Sparkles,
   Zap,
@@ -32,9 +32,12 @@ import {
   ReportData,
 } from "../types";
 import { loadAllProducts } from "../data/productMaster";
+import { stripInternalPrefix } from "../utils/displayName";
 import {
   assembleInvestigationPackage,
   normalizeClaimTypeCategory,
+  getRecommendedPresetsForClaim,
+  getPackageInputCompleteness,
 } from "../data/investigationPackageBuilder";
 import { CLAIM_TYPES, ClaimTypeCategory } from "../utils/claimTypeConfig";
 
@@ -51,15 +54,41 @@ export function InvestigationPreparationView({
 }: InvestigationPreparationViewProps) {
   const products = useMemo(() => loadAllProducts(), []);
 
-  // [1. 기본정보] 입력 상태
+  // 업무용 제품 목록 노출 기준: 비활성(단종 등) 및 [DEMO] 예시 제품 제외
+  // ([실제] 제품은 유지 + 표시 시 접두어만 제거, [범용] 제품은 존재하지 않음)
+  const isWorkProduct = (p: ProductMaster) =>
+    p.isActive !== false && !p.productName.startsWith("[DEMO]");
+
+  // [1. 기본정보] 입력 상태 (초안·보관함 재진입 시 직접 입력 상태 복원)
+  const initialProductId = currentReport.productInfo.productId || "";
+  const initialProductName = currentReport.productInfo.productName || "";
+  const initialMatch: ProductMaster | undefined = (() => {
+    if (initialProductId) {
+      const byId = products.find((p) => p.id === initialProductId);
+      if (byId) return byId;
+    }
+    const q = initialProductName.trim().toLowerCase();
+    if (q) {
+      return (
+        products.find((p) => p.productName.trim().toLowerCase() === q) ||
+        products.find(
+          (p) => p.productName.toLowerCase().includes(q) || q.includes(p.productName.toLowerCase())
+        )
+      );
+    }
+    return undefined;
+  })();
+  const [isDirectInput, setIsDirectInput] = useState<boolean>(
+    () => !initialMatch && initialProductName.trim().length > 0
+  );
   const [selectedProductId, setSelectedProductId] = useState<string>(
-    currentReport.productInfo.productId || "prod-vita-a"
+    initialMatch ? initialMatch.id : ""
   );
   const [productNameInput, setProductNameInput] = useState<string>(
-    currentReport.productInfo.productName || "비타민 음료 A"
+    initialProductName || "비타민 음료 A"
   );
   const [lotNumberInput, setLotNumberInput] = useState<string>(
-    currentReport.productInfo.lotNumber || "2026.04.15 / LOT A1204"
+    currentReport.productInfo.lotNumber || ""
   );
   const [claimTypeCategory, setClaimTypeCategory] = useState<ClaimTypeCategory>(
     normalizeClaimTypeCategory(currentReport.productInfo.claimTypeId || "foreign")
@@ -83,17 +112,73 @@ export function InvestigationPreparationView({
   const [isPackageAssembled, setIsPackageAssembled] = useState(false);
   const [isAssembling, setIsAssembling] = useState(false);
   const [assembledPackage, setAssembledPackage] = useState<InvestigationPackage | null>(null);
+  const [autoAssembledAt, setAutoAssembledAt] = useState<string>("");
+
+  const buildPackageFromInputs = () => {
+    const input: InvestigationPackageInput = {
+      productId: isDirectInput ? undefined : selectedProductId || selectedProductObj?.id,
+      productName: productNameInput.trim() || selectedProductObj?.productName || "비타민 음료 A",
+      lotNumber: lotNumberInput.trim(),
+      claimType: claimTypeCategory,
+      claimSubCategory: claimSubCategoryInput.trim(),
+      customerClaim: customerClaimInput.trim(),
+      hasSample,
+    };
+    return assembleInvestigationPackage(input);
+  };
+
+  // [자동 구성] 필수 조건(제품·제조번호)이 충족되면 입력 변경 시 자동 재구성
+  // (수동 버튼 없이 UX 자동화, 기존 assemble 로직 그대로 재사용)
+  useEffect(() => {
+    const { ready } = getPackageInputCompleteness({
+      productName: productNameInput,
+      lotNumber: lotNumberInput,
+    });
+    if (!ready) {
+      setIsPackageAssembled(false);
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setAssembledPackage(buildPackageFromInputs());
+      setIsPackageAssembled(true);
+      setIsAssembling(false);
+      const now = new Date();
+      setAutoAssembledAt(
+        `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}:${String(
+          now.getSeconds()
+        ).padStart(2, "0")}`
+      );
+    }, 600);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    isDirectInput,
+    selectedProductId,
+    productNameInput,
+    lotNumberInput,
+    claimTypeCategory,
+    claimSubCategoryInput,
+    customerClaimInput,
+    hasSample,
+  ]);
+
+  // 클레임 유형 맞춤 추천 프리셋 (동일 저장소, UI 표시용)
+  const recommendedPresets = useMemo(
+    () => getRecommendedPresetsForClaim(claimTypeCategory, 2),
+    [claimTypeCategory]
+  );
 
   // 활성 탭 (결과 뷰 상세 카드 탭)
   const [activePackageTab, setActivePackageTab] = useState<
     "all" | "product" | "process" | "template" | "past" | "phrases" | "targetProcess"
   >("all");
 
-  // 검색된 제품 목록
+  // 검색된 제품 목록 (업무용만: 비활성·[DEMO] 제외)
   const filteredProducts = useMemo(() => {
-    if (!productSearchQuery.trim()) return products;
+    const workList = products.filter(isWorkProduct);
+    if (!productSearchQuery.trim()) return workList;
     const q = productSearchQuery.toLowerCase().trim();
-    return products.filter(
+    return workList.filter(
       (p) =>
         p.productName.toLowerCase().includes(q) ||
         p.productCode.toLowerCase().includes(q) ||
@@ -102,33 +187,30 @@ export function InvestigationPreparationView({
     );
   }, [products, productSearchQuery]);
 
-  // 현재 선택된 제품 객체
+  // 현재 선택된 제품 객체 (직접 입력 모드에서는 마스터 연결 없음)
   const selectedProductObj = useMemo(() => {
+    if (isDirectInput) return null;
     return (
       products.find((p) => p.id === selectedProductId) ||
       products.find((p) => p.productName === productNameInput) ||
       products[0]
     );
-  }, [products, selectedProductId, productNameInput]);
+  }, [products, selectedProductId, productNameInput, isDirectInput]);
 
-  // [🔍 조사 패키지 자동 구성] 실행 핸들러
+  // [🔍 조사 패키지 수동 재구성] 실행 핸들러 (보조 기능, 자동 구성과 동일 로직)
   const handleAssemblePackage = () => {
     setIsAssembling(true);
     setTimeout(() => {
-      const input: InvestigationPackageInput = {
-        productId: selectedProductId || selectedProductObj?.id,
-        productName: productNameInput.trim() || selectedProductObj?.productName || "비타민 음료 A",
-        lotNumber: lotNumberInput.trim() || "LOT-A1204",
-        claimType: claimTypeCategory,
-        claimSubCategory: claimSubCategoryInput.trim(),
-        customerClaim: customerClaimInput.trim(),
-        hasSample,
-      };
-
-      const pkg = assembleInvestigationPackage(input);
+      const pkg = buildPackageFromInputs();
       setAssembledPackage(pkg);
       setIsPackageAssembled(true);
       setIsAssembling(false);
+      const now = new Date();
+      setAutoAssembledAt(
+        `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}:${String(
+          now.getSeconds()
+        ).padStart(2, "0")}`
+      );
 
       // 화면 스크롤 부드럽게 결과 영역으로 이동
       setTimeout(() => {
@@ -140,12 +222,21 @@ export function InvestigationPreparationView({
     }, 400);
   };
 
-  // 제품 선택 적용
+  // 제품 선택 적용 (마스터 모드로 전환, 마스터 자동 등록 없음)
   const handleSelectProduct = (prod: ProductMaster) => {
+    setIsDirectInput(false);
     setSelectedProductId(prod.id);
     setProductNameInput(prod.productName);
     setShowProductDropdown(false);
     // 패키지 재구성을 유도
+    setIsPackageAssembled(false);
+  };
+
+  // 직접 입력 적용 (마스터 ID 부여 없음, 마스터에 자동 등록하지 않음)
+  const handleDirectInput = (name: string) => {
+    setIsDirectInput(true);
+    setSelectedProductId("");
+    setProductNameInput(name);
     setIsPackageAssembled(false);
   };
 
@@ -154,9 +245,9 @@ export function InvestigationPreparationView({
     if (!assembledPackage) {
       // 아직 버튼을 누르지 않은 경우 즉시 구성 후 진행
       const input: InvestigationPackageInput = {
-        productId: selectedProductId || selectedProductObj?.id,
+        productId: isDirectInput ? undefined : selectedProductId || selectedProductObj?.id,
         productName: productNameInput.trim() || selectedProductObj?.productName || "비타민 음료 A",
-        lotNumber: lotNumberInput.trim() || "LOT-A1204",
+        lotNumber: lotNumberInput.trim(),
         claimType: claimTypeCategory,
         claimSubCategory: claimSubCategoryInput.trim(),
         customerClaim: customerClaimInput.trim(),
@@ -235,15 +326,64 @@ export function InvestigationPreparationView({
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-5 text-xs">
             
-            {/* 1) 제품 [제품 검색 ▼] */}
+            {/* 1) 제품 [제품 검색 ▼ / 직접 입력] */}
             <div className="space-y-1.5 relative">
               <label className="font-bold text-slate-800 flex items-center justify-between">
                 <span>제품명 (Product) <span className="text-rose-500">*</span></span>
                 <span className="text-[11px] font-normal text-blue-600">
-                  {selectedProductObj ? `${selectedProductObj.manufacturer} · ${selectedProductObj.manufactureLine}` : ""}
+                  {isDirectInput ? (
+                    <span className="px-1.5 py-0.2 rounded bg-amber-100 text-amber-800 border border-amber-300 font-bold">
+                      직접 입력 · 마스터 미등록
+                    </span>
+                  ) : (
+                    selectedProductObj ? `${selectedProductObj.manufacturer} · ${selectedProductObj.manufactureLine}` : ""
+                  )}
                 </span>
               </label>
 
+              {/* 마스터 선택 / 직접 입력 전환 */}
+              <div className="flex items-center gap-1 p-0.5 bg-slate-100 rounded-lg w-fit">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsDirectInput(false);
+                    setIsPackageAssembled(false);
+                  }}
+                  className={`px-2.5 py-1 rounded-md text-[11px] font-bold transition-colors ${
+                    !isDirectInput ? "bg-white text-blue-700 shadow-xs" : "text-slate-500 hover:text-slate-800"
+                  }`}
+                >
+                  마스터 선택
+                </button>
+                <button
+                  type="button"
+                  id="btn-product-direct-input-mode"
+                  onClick={() => handleDirectInput(productNameInput)}
+                  className={`px-2.5 py-1 rounded-md text-[11px] font-bold transition-colors ${
+                    isDirectInput ? "bg-white text-amber-700 shadow-xs" : "text-slate-500 hover:text-slate-800"
+                  }`}
+                  title="마스터에 없는 제품명을 직접 입력 (마스터에 자동 등록되지 않음)"
+                >
+                  직접 입력
+                </button>
+              </div>
+
+              {isDirectInput ? (
+                <div className="space-y-1">
+                  <input
+                    type="text"
+                    id="input-direct-product-name"
+                    value={productNameInput}
+                    onChange={(e) => handleDirectInput(e.target.value)}
+                    placeholder="예: 신규 음료 제품명 직접 입력"
+                    className="w-full px-3.5 py-2.5 bg-amber-50/60 border border-amber-300 rounded-xl font-bold text-slate-900 focus:bg-white focus:ring-2 focus:ring-amber-500/20 transition-colors"
+                  />
+                  <p className="text-[11px] text-slate-500">
+                    마스터에 자동 등록되지 않으며, 제조처·라인은 미등록 상태로 유지됩니다.
+                  </p>
+                </div>
+              ) : (
+              <>
               {/* 제품 검색 드롭다운 트리거 버튼 */}
               <div className="relative">
                 <button
@@ -274,7 +414,23 @@ export function InvestigationPreparationView({
                       />
                     </div>
                     <div className="max-h-52 overflow-y-auto divide-y divide-slate-100">
-                      {filteredProducts.map((p) => (
+                      {filteredProducts.length === 0 ? (
+                        <div className="p-3 text-center space-y-1.5">
+                          <p className="text-xs text-slate-500">검색 결과가 없습니다.</p>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              handleDirectInput(productSearchQuery);
+                              setProductSearchQuery("");
+                              setShowProductDropdown(false);
+                            }}
+                            className="px-3 py-1.5 text-xs font-bold text-amber-800 bg-amber-100 hover:bg-amber-200 border border-amber-300 rounded-lg transition-colors"
+                          >
+                            “{productSearchQuery.trim()}”(으)로 직접 입력 전환
+                          </button>
+                        </div>
+                      ) : (
+                      filteredProducts.map((p) => (
                         <div
                           key={p.id}
                           onClick={() => handleSelectProduct(p)}
@@ -283,22 +439,25 @@ export function InvestigationPreparationView({
                           }`}
                         >
                           <div>
-                            <div className="text-xs font-bold">{p.productName}</div>
+                            <div className="text-xs font-bold">{stripInternalPrefix(p.productName)}</div>
                             <div className="text-[10px] text-slate-500">
-                              {p.productCode} · {p.manufacturer} · {p.manufactureLine}
+                              {p.productCode} · {stripInternalPrefix(p.manufacturer)} · {stripInternalPrefix(p.manufactureLine)}
                             </div>
                           </div>
                           {selectedProductId === p.id && <Check className="w-3.5 h-3.5 text-blue-600" />}
                         </div>
-                      ))}
+                      ))
+                      )}
                     </div>
                   </div>
                 )}
               </div>
+              </>
+              )}
 
-              {/* 빠른 제품 선택 칩 */}
+              {/* 빠른 제품 선택 칩 (업무용만) */}
               <div className="flex flex-wrap gap-1.5 pt-1">
-                {products.slice(0, 5).map((p) => (
+                {products.filter(isWorkProduct).slice(0, 5).map((p) => (
                   <button
                     key={p.id}
                     type="button"
@@ -309,7 +468,7 @@ export function InvestigationPreparationView({
                         : "bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100"
                     }`}
                   >
-                    {p.productName}
+                    {stripInternalPrefix(p.productName)}
                   </button>
                 ))}
               </div>
@@ -328,7 +487,7 @@ export function InvestigationPreparationView({
                   setLotNumberInput(e.target.value);
                   setIsPackageAssembled(false);
                 }}
-                placeholder="예: 2026.04.15 / LOT A1204 또는 LOT 26H18-A01"
+                placeholder="제조번호를 입력하세요"
                 className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-300 rounded-xl font-mono text-xs font-bold text-slate-900 focus:bg-white focus:ring-2 focus:ring-blue-500/20 transition-colors"
               />
               <div className="flex items-center gap-1.5 pt-0.5 text-[11px] text-slate-500">
@@ -468,9 +627,36 @@ export function InvestigationPreparationView({
         </div>
 
         {/* ========================================================================= */}
-        {/* [2. 조사 패키지 자동 구성 버튼 영역] */}
+        {/* [2. 조사 패키지 자동 구성 상태 + 수동 재구성 (보조)] */}
+        {/* 기본정보 입력 시 자동 구성되며, 버튼은 수동 재구성용으로 유지 */}
         {/* ========================================================================= */}
         <div className="flex flex-col items-center justify-center py-2 space-y-2">
+          {(() => {
+            const { ready, missing } = getPackageInputCompleteness({
+              productName: productNameInput,
+              lotNumber: lotNumberInput,
+            });
+            if (!ready) {
+              return (
+                <p className="text-xs text-slate-500 text-center">
+                  제품·제조번호를 입력하면 조사 패키지가 자동으로 구성됩니다.
+                  <span className="text-slate-400"> (부족: {missing.join("·")})</span>
+                </p>
+              );
+            }
+            if (assembledPackage && isPackageAssembled) {
+              const presetCount = recommendedPresets.length;
+              const phraseCount = assembledPackage.recommendedPhrases?.length || 0;
+              const similarCount = assembledPackage.similarPastClaims?.length || 0;
+              return (
+                <p className="text-xs font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-xl px-3 py-1.5 text-center">
+                  ✓ 조사 패키지 자동 구성 완료 (기본 조사 {assembledPackage.investigationItems.filter((i) => i.isChecked).length}항목
+                  · 유사 {similarCount}건 · 상용구 {phraseCount}건 · 프리셋 {presetCount}건{autoAssembledAt ? ` · ${autoAssembledAt}` : ""})
+                </p>
+              );
+            }
+            return null;
+          })()}
           <button
             type="button"
             id="btn-trigger-assemble-package"
@@ -488,9 +674,9 @@ export function InvestigationPreparationView({
             ) : (
               <>
                 <Search className="w-5 h-5 text-slate-950 stroke-[2.5]" />
-                <span>[🔍 조사 패키지 자동 구성]</span>
+                <span>조사 패키지 재구성</span>
                 <span className="text-xs bg-slate-950/15 px-2 py-0.5 rounded-full font-bold">
-                  {isPackageAssembled ? "패키지 갱신" : "원클릭 자동 구성"}
+                  보조 기능
                 </span>
               </>
             )}
@@ -512,7 +698,7 @@ export function InvestigationPreparationView({
                 <CheckCircle2 className="w-4 h-4 text-emerald-600" />
                 <span>조사 패키지가 성공적으로 구성되었습니다.</span>
                 <span className="text-emerald-700 font-normal">
-                  ({assembledPackage.productMaster.productName} · {assembledPackage.claimTypeMaster.claimTypeName})
+                  ({stripInternalPrefix(assembledPackage.productMaster.productName)} · {assembledPackage.claimTypeMaster.claimTypeName})
                 </span>
               </div>
               <div className="flex items-center gap-2 text-[11px] text-emerald-800">
@@ -542,7 +728,7 @@ export function InvestigationPreparationView({
                   <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-100">
                     <span className="text-[10.5px] text-slate-500 block">제품명</span>
                     <strong className="text-slate-900 block truncate font-bold">
-                      {assembledPackage.productMaster.productName}
+                      {stripInternalPrefix(assembledPackage.productMaster.productName)}
                     </strong>
                   </div>
                   <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-100">
@@ -554,13 +740,13 @@ export function InvestigationPreparationView({
                   <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-100">
                     <span className="text-[10.5px] text-slate-500 block">제조처</span>
                     <strong className="text-blue-700 block truncate font-bold">
-                      {assembledPackage.productMaster.manufacturer}
+                      {stripInternalPrefix(assembledPackage.productMaster.manufacturer)}
                     </strong>
                   </div>
                   <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-100">
                     <span className="text-[10.5px] text-slate-500 block">제조라인</span>
                     <strong className="text-slate-900 block truncate font-bold">
-                      {assembledPackage.productMaster.manufactureLine}
+                      {stripInternalPrefix(assembledPackage.productMaster.manufactureLine)}
                     </strong>
                   </div>
                 </div>
@@ -633,6 +819,42 @@ export function InvestigationPreparationView({
                     </div>
                   ))}
                 </div>
+              </div>
+
+              {/* [정보 3-1. 추천 프리셋] */}
+              <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-2xs space-y-3">
+                <div className="flex items-center justify-between border-b border-slate-100 pb-2.5">
+                  <h3 className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
+                    <Layers className="w-4 h-4 text-purple-600" />
+                    <span>[추천 프리셋] 과거 사용 조사 구조</span>
+                  </h3>
+                  <span className="text-[10.5px] text-purple-700 bg-purple-50 px-2 py-0.5 rounded-full font-bold">
+                    {recommendedPresets.length}건 추천
+                  </span>
+                </div>
+                <div className="space-y-2">
+                  {recommendedPresets.map((preset) => (
+                    <div
+                      key={preset.id}
+                      className="p-2.5 rounded-xl bg-slate-50 border border-slate-100 text-xs space-y-1"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <strong className="text-slate-900 font-bold truncate">
+                          {preset.name}
+                        </strong>
+                        <span className="text-[10px] text-purple-700 bg-purple-100/70 px-1.5 py-0.2 rounded font-bold shrink-0">
+                          {preset.subCategory || preset.category || "표준"}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-600 line-clamp-2">
+                        {preset.description}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+                <p className="text-[10.5px] text-slate-500">
+                  ※ [조사 시작] 후 STEP 1의 유형·프리셋 설정에서 동일한 프리셋을 적용할 수 있습니다.
+                </p>
               </div>
 
               {/* [정보 4. 과거 유사사례] */}

@@ -1,6 +1,6 @@
 import { ReportData } from "../types";
 
-export type WorkflowStepId = "basic" | "investigation" | "cause" | "conclusion";
+export type WorkflowStepId = "intake" | "investigate" | "review";
 
 export interface RequiredFieldItem {
   id: string;
@@ -17,13 +17,13 @@ export interface RequiredFieldItem {
  */
 export const REQUIRED_WORKFLOW_FIELDS: RequiredFieldItem[] = [
   // ==========================================
-  // [Step 1] 기본 정보 및 접수/제품 정보 (basic)
+  // [STEP 1] 접수/현품: 접수·제품·현품 기본정보 (intake)
   // ==========================================
   {
     id: "customer-name",
     name: "고객명",
     buttonLabel: "고객명 입력",
-    step: "basic",
+    step: "intake",
     targetElementId: "field-customer-name",
     isMissing: (report) => !report.customerClaim.customerName?.trim(),
   },
@@ -31,7 +31,7 @@ export const REQUIRED_WORKFLOW_FIELDS: RequiredFieldItem[] = [
     id: "claim-received-at",
     name: "클레임 접수일자",
     buttonLabel: "접수일자 입력",
-    step: "basic",
+    step: "intake",
     targetElementId: "field-claim-received-at",
     isMissing: (report) => !report.customerClaim.receivedAt?.trim(),
   },
@@ -39,7 +39,7 @@ export const REQUIRED_WORKFLOW_FIELDS: RequiredFieldItem[] = [
     id: "claim-product-name",
     name: "대상 제품명",
     buttonLabel: "제품명 입력",
-    step: "basic",
+    step: "intake",
     targetElementId: "field-claim-product-name",
     isMissing: (report) => !report.productInfo.productName?.trim(),
   },
@@ -47,7 +47,7 @@ export const REQUIRED_WORKFLOW_FIELDS: RequiredFieldItem[] = [
     id: "lot-number",
     name: "제조번호(LOT)",
     buttonLabel: "제조번호 입력",
-    step: "basic",
+    step: "intake",
     targetElementId: "field-lot-number",
     isMissing: (report) => !report.productInfo.lotNumber?.trim(),
   },
@@ -55,7 +55,7 @@ export const REQUIRED_WORKFLOW_FIELDS: RequiredFieldItem[] = [
     id: "claim-expiry-date",
     name: "소비기한",
     buttonLabel: "소비기한 입력",
-    step: "basic",
+    step: "intake",
     targetElementId: "field-claim-expiry-date",
     isMissing: (report) => !report.productInfo.expiryDate?.trim(),
   },
@@ -63,20 +63,20 @@ export const REQUIRED_WORKFLOW_FIELDS: RequiredFieldItem[] = [
     id: "claim-details",
     name: "클레임 상세 내용",
     buttonLabel: "클레임 상세 입력",
-    step: "basic",
+    step: "intake",
     targetElementId: "field-claim-details",
     isMissing: (report) => !report.customerClaim.claimDetails?.trim(),
   },
 
   // ==========================================
-  // [Step 2] 정밀분석 및 5대 조사 항목 (investigation)
-  // 순서: 현품 분석 -> 보관품 조사 -> 제조기록 조사 -> 품질검사 결과 -> 제조공정 조사
+  // [STEP 2] 품질 조사: 정밀분석·5대 조사·원인 검토 (investigate)
+  // 순서: 현품 분석 -> 보관품 조사 -> 제조기록 조사 -> 품질검사 결과 -> 제조공정 조사 -> 원인 분석 -> 재발방지대책
   // ==========================================
   {
     id: "visual-inspection",
     name: "현품 분석",
     buttonLabel: "현품 분석",
-    step: "investigation",
+    step: "investigate",
     targetElementId: "field-visual-sample-condition",
     isMissing: (report) => {
       if (report.analysisResults.visualInspection.skipped) return false;
@@ -89,7 +89,7 @@ export const REQUIRED_WORKFLOW_FIELDS: RequiredFieldItem[] = [
     id: "retained-sample",
     name: "보관품 조사",
     buttonLabel: "보관품 조사",
-    step: "investigation",
+    step: "investigate",
     targetElementId: "field-choice-retained-sample",
     isMissing: (report) => {
       if (report.lotHistory.skipped) return false;
@@ -106,7 +106,7 @@ export const REQUIRED_WORKFLOW_FIELDS: RequiredFieldItem[] = [
     id: "manufacturing-record",
     name: "제조기록 조사",
     buttonLabel: "제조기록 조사",
-    step: "investigation",
+    step: "investigate",
     targetElementId: "field-choice-manufacturing-record",
     isMissing: (report) => {
       if (report.lotHistory.skipped) return false;
@@ -122,7 +122,7 @@ export const REQUIRED_WORKFLOW_FIELDS: RequiredFieldItem[] = [
     id: "quality-inspection",
     name: "품질검사 결과",
     buttonLabel: "품질검사 결과",
-    step: "investigation",
+    step: "investigate",
     targetElementId: "field-choice-quality-inspection",
     isMissing: (report) => {
       if (report.lotHistory.skipped) return false;
@@ -138,7 +138,7 @@ export const REQUIRED_WORKFLOW_FIELDS: RequiredFieldItem[] = [
     id: "manufacturing-process",
     name: "제조공정 조사",
     buttonLabel: "제조공정 조사",
-    step: "investigation",
+    step: "investigate",
     targetElementId: "field-choice-manufacturing-process",
     isMissing: (report) => {
       if (report.manufacturingProcess.skipped) return false;
@@ -154,13 +154,13 @@ export const REQUIRED_WORKFLOW_FIELDS: RequiredFieldItem[] = [
   },
 
   // ==========================================
-  // [Step 3] 원인 분석 및 재발방지대책 (cause)
+  // [STEP 2] 원인 검토: 원인 분석 및 재발방지대책 (investigate)
   // ==========================================
   {
     id: "root-cause",
     name: "원인 분석",
     buttonLabel: "원인 분석",
-    step: "cause",
+    step: "investigate",
     targetElementId: "field-root-cause",
     isMissing: (report) => {
       if (report.rootCauseAndActions.skipped) return false;
@@ -171,7 +171,7 @@ export const REQUIRED_WORKFLOW_FIELDS: RequiredFieldItem[] = [
     id: "preventive-measures",
     name: "재발방지대책",
     buttonLabel: "재발방지대책 작성",
-    step: "cause",
+    step: "investigate",
     targetElementId: "field-preventive-measures",
     isMissing: (report) => {
       if (report.rootCauseAndActions.skipped) return false;
@@ -181,13 +181,13 @@ export const REQUIRED_WORKFLOW_FIELDS: RequiredFieldItem[] = [
   },
 
   // ==========================================
-  // [Step 4] 종합 결론 (conclusion)
+  // [STEP 3] 보고서 검토/회신: 종합 결론 (review)
   // ==========================================
   {
     id: "conclusion-summary",
     name: "결론 핵심 요약",
     buttonLabel: "결론 작성",
-    step: "conclusion",
+    step: "review",
     targetElementId: "field-conclusion-summary",
     isMissing: (report) => {
       const points = report.conclusion.summaryPoints || [];
@@ -198,7 +198,7 @@ export const REQUIRED_WORKFLOW_FIELDS: RequiredFieldItem[] = [
     id: "conclusion-apology",
     name: "고객 안내문",
     buttonLabel: "고객 안내문 작성",
-    step: "conclusion",
+    step: "review",
     targetElementId: "field-conclusion-apology",
     isMissing: (report) => !report.conclusion.apologyText?.trim(),
   },
@@ -239,7 +239,7 @@ export function getNextRequiredAction(
   const currentStepMissing = allMissing.filter((item) => item.step === currentStep);
 
   // 제품 정보 서브탭(product)에 위치한 경우, 제품 영역 필수 항목(제조번호, 소비기한 등)을 최우선으로 안내
-  if (currentStep === "basic" && currentSubTab === "product") {
+  if (currentStep === "intake" && currentSubTab === "product") {
     const productSpecificMissing = currentStepMissing.filter(
       (item) => item.id === "lot-number" || item.id === "claim-expiry-date" || item.id === "claim-product-name"
     );
@@ -275,8 +275,8 @@ export function getNextRequiredAction(
   }
 
   // 2. 현재 단계는 완료되었으므로, 워크플로우 순서상 다음 필수 항목 탐색
-  // 순서: basic -> investigation -> cause -> conclusion
-  const stepOrder: WorkflowStepId[] = ["basic", "investigation", "cause", "conclusion"];
+  // 순서: intake -> investigate -> review
+  const stepOrder: WorkflowStepId[] = ["intake", "investigate", "review"];
   const currentIdx = stepOrder.indexOf(currentStep);
 
   // 현재 단계 이후의 단계부터 먼저 탐색
@@ -324,7 +324,7 @@ export function getNextRequiredAction(
     type: "final_review",
     buttonText: "최종 검토 →",
     actionLabel: "최종 검토",
-    targetStep: "conclusion",
+    targetStep: "review",
     remainingCount: 0,
     isAllCompleted: true,
     stepRemainingCount: 0,

@@ -8,6 +8,7 @@ import {
   normalizeInvestigationItem,
   normalizeResultType,
 } from "../utils/situationPhraseRecommender";
+import { buildInsertedText, recordPhraseUse } from "../utils/phraseInsert";
 import { loadAllPhrases } from "../data/standardPhrases";
 
 interface SituationPhraseRecommendationCardProps {
@@ -57,7 +58,9 @@ export function SituationPhraseRecommendationCard({
       currentValue.includes(activePhrase.content.trim()));
 
   const handleApply = (content: string) => {
-    onApplySentence(content);
+    // 기존 직접 입력은 유지하고 이어서 삽입 (덮어쓰기 금지)
+    onApplySentence(buildInsertedText(currentValue, content));
+    if (activePhrase) recordPhraseUse(activePhrase);
     setJustApplied(true);
     setTimeout(() => setJustApplied(false), 2500);
   };

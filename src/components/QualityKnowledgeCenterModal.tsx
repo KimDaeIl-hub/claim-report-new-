@@ -43,7 +43,7 @@ import {
 import { FactoryProcessPreset, saveFactoryPreset, deleteFactoryPreset } from "../data/factoryProcessPresets";
 import { saveAllPresets } from "../data/presets";
 import { saveAllPhrases } from "../data/standardPhrases";
-import { PastClaimItem } from "../utils/pastClaimManager";
+import { PastClaimItem, createCopiedClaimReport, DEFAULT_CLAIM_COPY_OPTIONS } from "../utils/pastClaimManager";
 import { ClaimKnowledgeItem } from "../types/claimKnowledge";
 import {
   loadCompleteKnowledgeGraph,
@@ -53,7 +53,14 @@ import {
   getManufacturer360View,
   getProcess360View,
   getClaimType360View,
+  filterKnowledgeCenter,
+  normalizeKnowledgeItem,
+  KC_SEARCH_SCOPES,
 } from "../utils/qualityKnowledgeGraph";
+import {
+  getRegistrationStatus,
+  RegistrationStatusReport,
+} from "../utils/seedImporter";
 
 export type KnowledgeCenterTab =
   | "products"       // 1. 제품
@@ -76,11 +83,78 @@ interface QualityKnowledgeCenterModalProps {
   onApplyPhrase?: (fieldKey: string, content: string) => void;
   onCopyAsNewClaim?: (pastReport: ReportData) => void;
   onUseAsInvestigationPackage?: (pastReport: ReportData) => void;
+  // 각 탭 전용 관리 모달 브릿지 (CRUD 편집기는 기존 모달 재사용, 지식센터가 단일 진입점)
+  onOpenProductManager?: () => void;
+  onOpenManufacturerManager?: () => void;
+  onOpenProcessManager?: () => void;
+  onOpenPresetManager?: () => void;
+  onOpenPhraseManager?: () => void;
+  onOpenPastClaimSearch?: () => void;
+  onOpenKnowledgeManager?: () => void;
 }
 
 interface NavigationHistoryItem {
   tab: KnowledgeCenterTab;
   selectedId: string;
+}
+
+/**
+ * 지식센터 내부 오류 경계 (최후 방어선)
+ * - 근본 원인 수정(정규화·방어 접근)과 별개로, 예상 못한 렌더 예외 시
+ *   전체 앱 흰 화면 대신 센터 내부에 안내 + 다시 시도/닫기를 제공
+ * - 데이터 쓰기·삭제 없음
+ */
+interface KcErrorBoundaryProps {
+  onClose: () => void;
+  children: React.ReactNode;
+}
+
+interface KcErrorBoundaryState {
+  hasError: boolean;
+}
+
+class KcErrorBoundary extends React.Component<KcErrorBoundaryProps, KcErrorBoundaryState> {
+  state: KcErrorBoundaryState = { hasError: false };
+
+  static getDerivedStateFromError(): KcErrorBoundaryState {
+    return { hasError: true };
+  }
+
+  componentDidCatch(error: unknown) {
+    console.error("[QC] 지식센터 렌더 오류:", error);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="bg-white w-full max-w-xl rounded-2xl shadow-2xl border border-slate-300 p-6 text-center space-y-3 text-slate-900">
+          <p className="text-sm font-black">지식센터 화면을 표시하는 중 문제가 발생했습니다.</p>
+          <p className="text-xs text-slate-500 leading-relaxed">
+            저장된 일부 데이터 형식이 달라 렌더링에 실패했습니다.
+            <br />
+            저장 데이터는 변경되지 않았습니다. 다시 시도하거나 닫았다가 열어주세요.
+          </p>
+          <div className="flex items-center justify-center gap-2">
+            <button
+              type="button"
+              onClick={() => this.setState({ hasError: false })}
+              className="px-4 py-2 text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors cursor-pointer"
+            >
+              다시 시도
+            </button>
+            <button
+              type="button"
+              onClick={this.props.onClose}
+              className="px-4 py-2 text-xs font-semibold text-slate-700 bg-white hover:bg-slate-100 border border-slate-300 rounded-lg transition-colors cursor-pointer"
+            >
+              닫기
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
 }
 
 export function QualityKnowledgeCenterModal({
@@ -94,6 +168,13 @@ export function QualityKnowledgeCenterModal({
   onApplyPhrase,
   onCopyAsNewClaim,
   onUseAsInvestigationPackage,
+  onOpenProductManager,
+  onOpenManufacturerManager,
+  onOpenProcessManager,
+  onOpenPresetManager,
+  onOpenPhraseManager,
+  onOpenPastClaimSearch,
+  onOpenKnowledgeManager,
 }: QualityKnowledgeCenterModalProps) {
   // 전체 8대 지식 저장소 로드
   const [graph, setGraph] = useState<InterlinkedKnowledgeGraph>(() => loadCompleteKnowledgeGraph());
@@ -158,7 +239,7 @@ export function QualityKnowledgeCenterModal({
         setSelectedKnowledgeId(freshGraph.knowledgeItems[0].id);
       }
     }
-  }, [isOpen]);
+  }, [isOpen, initialTab]);
 
   // 상호 연계 점프 핸들러 (어떤 정보에서든 관련 정보로 1-클릭 이동)
   const navigateToEntity = (targetTab: KnowledgeCenterTab, targetId: string) => {
@@ -207,68 +288,29 @@ export function QualityKnowledgeCenterModal({
     else if (last.tab === "knowledge") setSelectedKnowledgeId(last.selectedId);
   };
 
-  if (!isOpen) return null;
-
   // =========================================================================
-  // FILTERED LISTS
+  // 파생 데이터 (Hook은 조기 반환보다 앞에서 항상 같은 순서로 호출)
   // =========================================================================
-  const q = searchQuery.toLowerCase().trim();
+  // =========================================================================
+  // FILTERED LISTS (공통 검색 헬퍼 사용 — 탭별 확장 매칭, Master/승인건 분리 유지)
+  // =========================================================================
+  const {
+    products: filteredProducts,
+    manufacturers: filteredManufacturers,
+    processes: filteredProcesses,
+    claimTypes: filteredClaimTypes,
+    templates: filteredTemplates,
+    phrases: filteredPhrases,
+    pastClaims: filteredPastClaims,
+    knowledgeItems: filteredKnowledge,
+  } = filterKnowledgeCenter(graph, searchQuery);
 
-  const filteredProducts = graph.products.filter((p) => {
-    if (!q) return true;
-    return (
-      p.productName.toLowerCase().includes(q) ||
-      p.manufacturer.toLowerCase().includes(q) ||
-      p.manufactureLine.toLowerCase().includes(q) ||
-      (p.subProductType || "").toLowerCase().includes(q) ||
-      (p.primaryClaimTypes || []).some((ct) => ct.toLowerCase().includes(q))
-    );
-  });
-
-  const filteredManufacturers = graph.manufacturers.filter((m) => {
-    if (!q) return true;
-    return m.name.toLowerCase().includes(q) || (m.factoryLocation || "").toLowerCase().includes(q);
-  });
-
-  const filteredProcesses = graph.processes.filter((pr) => {
-    if (!q) return true;
-    return pr.name.toLowerCase().includes(q) || pr.processFlow.toLowerCase().includes(q);
-  });
-
-  const filteredClaimTypes = graph.claimTypes.filter((ct) => {
-    if (!q) return true;
-    return ct.name.toLowerCase().includes(q) || ct.description.toLowerCase().includes(q);
-  });
-
-  const filteredTemplates = graph.templates.filter((tpl) => {
-    if (!q) return true;
-    return tpl.name.toLowerCase().includes(q) || (tpl.description || "").toLowerCase().includes(q);
-  });
-
-  const filteredPhrases = graph.phrases.filter((ph) => {
-    if (!q) return true;
-    return ph.title.toLowerCase().includes(q) || ph.content.toLowerCase().includes(q);
-  });
-
-  const filteredPastClaims = graph.pastClaims.filter((c) => {
-    if (!q) return true;
-    return (
-      c.productName.toLowerCase().includes(q) ||
-      c.claimType.toLowerCase().includes(q) ||
-      c.lotNumber.toLowerCase().includes(q) ||
-      c.manufactureLine.toLowerCase().includes(q)
-    );
-  });
-
-  const filteredKnowledge = graph.knowledgeItems.filter((k) => {
-    if (!q) return true;
-    return (
-      k.basicInfo.productName.toLowerCase().includes(q) ||
-      k.basicInfo.claimType.toLowerCase().includes(q) ||
-      k.basicInfo.lotNumber.toLowerCase().includes(q) ||
-      k.conclusionInfo.causeCategory.toLowerCase().includes(q)
-    );
-  });
+  // 등록 현황 (읽기 전용: 저장/Seed 미반영/연결끊김 집계)
+  const registrationStatus: RegistrationStatusReport = useMemo(
+    () => (isOpen ? getRegistrationStatus() : { domains: [], totalStored: 0, totalPending: 0, totalBroken: 0 }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [isOpen, graph]
+  );
 
   // Selected Entities
   const activeProduct = graph.products.find((p) => p.id === selectedProductId) || graph.products[0];
@@ -278,7 +320,14 @@ export function QualityKnowledgeCenterModal({
   const activeTemplate = graph.templates.find((tpl) => tpl.id === selectedTemplateId) || graph.templates[0];
   const activePhrase = graph.phrases.find((ph) => ph.id === selectedPhraseId) || graph.phrases[0];
   const activePastClaim = graph.pastClaims.find((c) => c.id === selectedPastClaimId) || graph.pastClaims[0];
-  const activeKnowledge = graph.knowledgeItems.find((k) => k.id === selectedKnowledgeId) || graph.knowledgeItems[0];
+  const activeKnowledgeRaw =
+    graph.knowledgeItems.find((k) => k.id === selectedKnowledgeId) || graph.knowledgeItems[0];
+  // 상세 화면 렌더 안전 정규화 (원본·저장 데이터 불변, 읽기 전용 복사본)
+  const activeKnowledge = useMemo(
+    () => (activeKnowledgeRaw ? normalizeKnowledgeItem(activeKnowledgeRaw) : activeKnowledgeRaw),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [selectedKnowledgeId, graph]
+  );
 
   // 360 Views
   const product360 = activeProduct ? getProduct360View(activeProduct, graph) : null;
@@ -286,8 +335,11 @@ export function QualityKnowledgeCenterModal({
   const process360 = activeProcess ? getProcess360View(activeProcess, graph) : null;
   const claimType360 = activeClaimType ? getClaimType360View(activeClaimType, graph) : null;
 
+  if (!isOpen) return null;
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-slate-950/75 backdrop-blur-xs animate-in fade-in duration-150">
+      <KcErrorBoundary onClose={onClose}>
       <div className="bg-white w-full max-w-7xl max-h-[94vh] rounded-2xl shadow-2xl border border-slate-300 flex flex-col overflow-hidden text-slate-900">
         
         {/* ========================================================================= */}
@@ -337,7 +389,7 @@ export function QualityKnowledgeCenterModal({
             </div>
           </div>
 
-          {/* 8 MASTER TABS BAR (사용자 요청 메뉴 순서 1 ~ 8 준수) */}
+          {/* 8 MASTER TABS BAR (1 제품 → 2 제조처·라인 → 3 제조공정 → 4 프리셋 → 5 상용구 → 6 과거 클레임 → 7 지식 베이스 → 8 클레임 유형) */}
           <div className="mt-3 flex items-center gap-1.5 overflow-x-auto pb-1 border-t border-slate-800/80 pt-2.5 text-xs font-bold scrollbar-thin">
             {/* 1. 제품 */}
             <button
@@ -399,27 +451,7 @@ export function QualityKnowledgeCenterModal({
               </span>
             </button>
 
-            {/* 4. 클레임 유형 */}
-            <button
-              type="button"
-              onClick={() => {
-                setActiveTab("claimTypes");
-                setSearchQuery("");
-              }}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-all shrink-0 cursor-pointer ${
-                activeTab === "claimTypes"
-                  ? "bg-blue-600 text-white shadow-xs font-black ring-1 ring-blue-400"
-                  : "text-slate-300 hover:text-white hover:bg-slate-800"
-              }`}
-            >
-              <AlertOctagon className="w-3.5 h-3.5 text-rose-300" />
-              <span>4. 클레임 유형</span>
-              <span className="text-[10px] bg-slate-950/40 text-rose-200 px-1.5 py-0.2 rounded-full">
-                {graph.claimTypes.length}
-              </span>
-            </button>
-
-            {/* 5. 조사 템플릿 */}
+            {/* 4. 프리셋 (조사 템플릿) */}
             <button
               type="button"
               onClick={() => {
@@ -433,13 +465,13 @@ export function QualityKnowledgeCenterModal({
               }`}
             >
               <Sparkles className="w-3.5 h-3.5 text-purple-300" />
-              <span>5. 조사 템플릿</span>
+              <span>4. 프리셋</span>
               <span className="text-[10px] bg-slate-950/40 text-purple-200 px-1.5 py-0.2 rounded-full">
                 {graph.templates.length}
               </span>
             </button>
 
-            {/* 6. 상용구 */}
+            {/* 5. 상용구 */}
             <button
               type="button"
               onClick={() => {
@@ -453,13 +485,13 @@ export function QualityKnowledgeCenterModal({
               }`}
             >
               <BookOpen className="w-3.5 h-3.5 text-emerald-300" />
-              <span>6. 상용구</span>
+              <span>5. 상용구</span>
               <span className="text-[10px] bg-slate-950/40 text-emerald-200 px-1.5 py-0.2 rounded-full">
                 {graph.phrases.length}
               </span>
             </button>
 
-            {/* 7. 과거 클레임 */}
+            {/* 6. 과거 클레임 */}
             <button
               type="button"
               onClick={() => {
@@ -473,13 +505,13 @@ export function QualityKnowledgeCenterModal({
               }`}
             >
               <History className="w-3.5 h-3.5 text-amber-300" />
-              <span>7. 과거 클레임</span>
+              <span>6. 과거 클레임</span>
               <span className="text-[10px] bg-slate-950/40 text-amber-200 px-1.5 py-0.2 rounded-full">
                 {graph.pastClaims.length}
               </span>
             </button>
 
-            {/* 8. 품질 지식 */}
+            {/* 7. 지식 베이스 */}
             <button
               type="button"
               onClick={() => {
@@ -493,9 +525,29 @@ export function QualityKnowledgeCenterModal({
               }`}
             >
               <Database className="w-3.5 h-3.5 text-teal-300" />
-              <span>8. 품질 지식</span>
+              <span>7. 지식 베이스</span>
               <span className="text-[10px] bg-slate-950/40 text-teal-200 px-1.5 py-0.2 rounded-full">
                 {graph.knowledgeItems.length}
+              </span>
+            </button>
+
+            {/* 8. 클레임 유형 (기존 조사 항목 필터 연계 유지) */}
+            <button
+              type="button"
+              onClick={() => {
+                setActiveTab("claimTypes");
+                setSearchQuery("");
+              }}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-all shrink-0 cursor-pointer ${
+                activeTab === "claimTypes"
+                  ? "bg-blue-600 text-white shadow-xs font-black ring-1 ring-blue-400"
+                  : "text-slate-300 hover:text-white hover:bg-slate-800"
+              }`}
+            >
+              <AlertOctagon className="w-3.5 h-3.5 text-rose-300" />
+              <span>8. 클레임 유형</span>
+              <span className="text-[10px] bg-slate-950/40 text-rose-200 px-1.5 py-0.2 rounded-full">
+                {graph.claimTypes.length}
               </span>
             </button>
           </div>
@@ -525,29 +577,65 @@ export function QualityKnowledgeCenterModal({
                   onChange={(e) => setSearchQuery(e.target.value)}
                   placeholder={
                     activeTab === "products"
-                      ? "제품명, 제조처, 라인 검색..."
+                      ? "제품명, 코드, 용량, 포장, 제조처, 라인 검색..."
                       : activeTab === "manufacturers"
-                      ? "제조처명, 소재지 검색..."
+                      ? "제조처명, 소재지, 품목군 검색..."
                       : activeTab === "processes"
-                      ? "공정명, 공정단계 검색..."
+                      ? "공정명, 흐름, 단계, 설명 검색..."
                       : activeTab === "claimTypes"
-                      ? "클레임 유형 검색..."
+                      ? "유형명, 설명, 위험요인 검색..."
                       : activeTab === "templates"
-                      ? "조사 템플릿 검색..."
+                      ? "프리셋명, 설명, 분류 검색..."
                       : activeTab === "phrases"
-                      ? "상용구 제목, 본문 검색..."
+                      ? "제목, 본문, 유형, 항목 검색..."
                       : activeTab === "pastClaims"
-                      ? "과거 사례 제품, Lot 검색..."
-                      : "품질 지식 검색..."
+                      ? "제품, 유형, Lot, 라인, 조사자 검색..."
+                      : "제품, 유형, Lot, 원인분야, 원인상세, 제조처 검색..."
                   }
                   className="w-full text-xs pl-8 pr-3 py-1.5 bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500"
                 />
               </div>
             </div>
 
+            {/* 등록 현황 (읽기 전용: 저장/미반영 Seed/연결끊김 집계) */}
+            <details className="mx-3 mt-2 mb-1 rounded-lg border border-slate-200 bg-white text-xs">
+              <summary className="px-2.5 py-1.5 cursor-pointer font-bold text-slate-700 list-none flex items-center justify-between">
+                <span>
+                  등록 현황: 저장 {registrationStatus.totalStored}건
+                  {registrationStatus.totalPending > 0 && (
+                    <span className="text-amber-700"> · 미반영 Seed {registrationStatus.totalPending}건</span>
+                  )}
+                  {registrationStatus.totalBroken > 0 && (
+                    <span className="text-red-700"> · 연결끊김 {registrationStatus.totalBroken}건</span>
+                  )}
+                </span>
+                <span className="text-slate-400">▾</span>
+              </summary>
+              <div className="px-2.5 pb-2 space-y-1">
+                {registrationStatus.domains.map((d) => (
+                  <div key={d.domain} className="flex items-center justify-between gap-2 text-[11px]">
+                    <span className="font-semibold text-slate-600">{d.domain}</span>
+                    <span className="text-slate-500">
+                      저장 {d.stored}건
+                      {d.pending > 0 && <span className="text-amber-700"> · 미반영 {d.pending}건</span>}
+                      {d.brokenLinks.length > 0 && (
+                        <span className="text-red-700" title={d.brokenLinks.slice(0, 5).join("\n")}>
+                          {" "}· 연결끊김 {d.brokenLinks.length}건
+                        </span>
+                      )}
+                    </span>
+                  </div>
+                ))}
+                {registrationStatus.totalPending > 0 && (
+                  <p className="text-[10px] text-slate-400 pt-1">
+                    미반영 Seed는 `?seed=demo` 1회 적용으로 반영됩니다 (기존 데이터 우선, 덮어쓰기 없음).
+                  </p>
+                )}
+              </div>
+            </details>
+
             {/* Scrollable Items List */}
             <div className="flex-1 overflow-y-auto divide-y divide-slate-100">
-              
               {/* 1. 제품 리스트 */}
               {activeTab === "products" &&
                 filteredProducts.map((p) => (
@@ -616,7 +704,7 @@ export function QualityKnowledgeCenterModal({
                   >
                     <strong className="text-xs font-bold text-slate-900 block truncate">{pr.name}</strong>
                     <div className="text-[11px] text-slate-500 mt-0.5 truncate">
-                      {pr.processSteps.length}단계 공정 ({pr.teamOrCategory})
+                      {(pr.processSteps || []).length}단계 공정 ({pr.teamOrCategory})
                     </div>
                   </div>
                 ))}
@@ -738,6 +826,38 @@ export function QualityKnowledgeCenterModal({
                 ))}
 
             </div>
+
+            {/* 빈 결과 안내 (검색 범위 + 상태 명시) */}
+            {(() => {
+              const counts: Record<string, number> = {
+                products: filteredProducts.length,
+                manufacturers: filteredManufacturers.length,
+                processes: filteredProcesses.length,
+                claimTypes: filteredClaimTypes.length,
+                templates: filteredTemplates.length,
+                phrases: filteredPhrases.length,
+                pastClaims: filteredPastClaims.length,
+                knowledge: filteredKnowledge.length,
+              };
+              if ((counts[activeTab] || 0) > 0) return null;
+              return (
+                <div className="p-4 text-center text-xs text-slate-500 bg-slate-50 border-t border-slate-200">
+                  <p className="font-bold text-slate-700">
+                    {searchQuery.trim()
+                      ? `“${searchQuery.trim()}”에 대한 검색 결과가 없습니다.`
+                      : "등록된 항목이 없습니다."}
+                  </p>
+                  <p className="mt-1">
+                    검색 범위: {KC_SEARCH_SCOPES[activeTab] || ""}
+                  </p>
+                  {activeTab === "pastClaims" && (
+                    <p className="mt-1 text-[11px]">
+                      과거 클레임은 승인된 지식·보관함 보고서·완료 사례에서 구성됩니다 (미승인 지식 제외).
+                    </p>
+                  )}
+                </div>
+              );
+            })()}
           </div>
 
           {/* RIGHT 360° INTERLINKED KNOWLEDGE VIEW PANEL */}
@@ -777,6 +897,16 @@ export function QualityKnowledgeCenterModal({
                       className="px-3.5 py-2 text-xs font-black text-white bg-blue-600 hover:bg-blue-700 rounded-lg shadow-xs transition-all active:scale-95 cursor-pointer"
                     >
                       현재 보고서에 이 제품 적용
+                    </button>
+                  )}
+                  {onOpenProductManager && (
+                    <button
+                      type="button"
+                      onClick={onOpenProductManager}
+                      className="px-3 py-2 text-xs font-bold text-blue-700 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-lg transition-colors cursor-pointer"
+                      title="제품 추가·수정·비활성화 관리창 열기"
+                    >
+                      제품 관리
                     </button>
                   )}
                 </div>
@@ -1015,6 +1145,16 @@ export function QualityKnowledgeCenterModal({
                       소재지: {mfg360.mfg.factoryLocation || "위치 정보 미기재"} · {mfg360.mfg.teamOrCategory}
                     </p>
                   </div>
+                  {onOpenManufacturerManager && (
+                    <button
+                      type="button"
+                      onClick={onOpenManufacturerManager}
+                      className="px-3 py-2 text-xs font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 rounded-lg transition-colors cursor-pointer shrink-0"
+                      title="제조처·라인 추가·수정·비활성화 관리창 열기"
+                    >
+                      제조처·라인 관리
+                    </button>
+                  )}
                 </div>
 
                 {/* 제조라인 목록 */}
@@ -1096,18 +1236,28 @@ export function QualityKnowledgeCenterModal({
                       보고서에 이 제조공정도 적용
                     </button>
                   )}
+                  {onOpenProcessManager && (
+                    <button
+                      type="button"
+                      onClick={onOpenProcessManager}
+                      className="px-3 py-2 text-xs font-bold text-cyan-800 bg-cyan-50 hover:bg-cyan-100 border border-cyan-200 rounded-lg transition-colors cursor-pointer"
+                      title="제조공정도 추가·수정·삭제 관리창 열기"
+                    >
+                      공정 관리
+                    </button>
+                  )}
                 </div>
 
                 {/* 공정 흐름도 */}
                 <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-2xs space-y-2">
-                  <h4 className="text-xs font-bold text-slate-700">공정 흐름 단계 ({process360.process.processSteps.length}단계)</h4>
+                  <h4 className="text-xs font-bold text-slate-700">공정 흐름 단계 ({(process360.process.processSteps || []).length}단계)</h4>
                   <div className="flex flex-wrap items-center gap-1.5 text-xs text-slate-800 font-medium">
-                    {process360.process.processSteps.map((st, i) => (
+                    {(process360.process.processSteps || []).map((st, i, arr) => (
                       <React.Fragment key={i}>
                         <span className="px-2.5 py-1 rounded bg-slate-100 border border-slate-200">
                           {i + 1}. {st}
                         </span>
-                        {i < process360.process.processSteps.length - 1 && (
+                        {i < arr.length - 1 && (
                           <ArrowRight className="w-3.5 h-3.5 text-slate-400 shrink-0" />
                         )}
                       </React.Fragment>
@@ -1260,20 +1410,30 @@ export function QualityKnowledgeCenterModal({
                       현재 작성 중인 보고서에 적용
                     </button>
                   )}
+                  {onOpenPresetManager && (
+                    <button
+                      type="button"
+                      onClick={onOpenPresetManager}
+                      className="px-3 py-2 text-xs font-bold text-purple-700 bg-purple-50 hover:bg-purple-100 border border-purple-200 rounded-lg transition-colors cursor-pointer"
+                      title="프리셋 추가·수정·삭제 관리창 열기"
+                    >
+                      프리셋 관리
+                    </button>
+                  )}
                 </div>
 
                 <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-2xs space-y-3 text-xs">
                   <div>
                     <span className="font-bold text-slate-700 block mb-1">템플릿 기본 원인 판정문:</span>
                     <p className="p-3 rounded-lg bg-slate-50 border border-slate-200 text-slate-800 leading-relaxed">
-                      {activeTemplate.data.rootCauseAndActions?.rootCause || "등록된 표준 원인 문구"}
+                      {activeTemplate.data?.rootCauseAndActions?.rootCause || "등록된 표준 원인 문구"}
                     </p>
                   </div>
 
                   <div>
                     <span className="font-bold text-slate-700 block mb-1">재발방지대책:</span>
                     <p className="p-3 rounded-lg bg-slate-50 border border-slate-200 text-slate-800 leading-relaxed whitespace-pre-line">
-                      {activeTemplate.data.rootCauseAndActions?.preventiveMeasures || "등록된 대책 문구"}
+                      {activeTemplate.data?.rootCauseAndActions?.preventiveMeasures || "등록된 대책 문구"}
                     </p>
                   </div>
                 </div>
@@ -1310,6 +1470,16 @@ export function QualityKnowledgeCenterModal({
                       className="px-3.5 py-2 text-xs font-black text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg shadow-xs transition-all active:scale-95 cursor-pointer"
                     >
                       현재 보고서에 삽입
+                    </button>
+                  )}
+                  {onOpenPhraseManager && (
+                    <button
+                      type="button"
+                      onClick={onOpenPhraseManager}
+                      className="px-3 py-2 text-xs font-bold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-lg transition-colors cursor-pointer"
+                      title="상용구 추가·수정·삭제 관리창 열기"
+                    >
+                      상용구 관리
                     </button>
                   )}
                 </div>
@@ -1363,12 +1533,24 @@ export function QualityKnowledgeCenterModal({
                       <button
                         type="button"
                         onClick={() => {
-                          onCopyAsNewClaim(activePastClaim.report);
+                          // 원본 ID 재사용 금지: 기본 복사 옵션으로 새 ID/문서번호 발급 후 복사
+                          const copied = createCopiedClaimReport(activePastClaim.report, DEFAULT_CLAIM_COPY_OPTIONS);
+                          onCopyAsNewClaim(copied);
                           onClose();
                         }}
                         className="px-3 py-2 text-xs font-bold text-slate-700 bg-white hover:bg-slate-50 border border-slate-300 rounded-lg transition-colors cursor-pointer"
                       >
                         새 클레임으로 복사
+                      </button>
+                    )}
+                    {onOpenPastClaimSearch && (
+                      <button
+                        type="button"
+                        onClick={onOpenPastClaimSearch}
+                        className="px-3 py-2 text-xs font-bold text-blue-700 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-lg transition-colors cursor-pointer"
+                        title="조건 검색·복사 옵션 등 상세 검색 관리창 열기"
+                      >
+                        상세 검색
                       </button>
                     )}
                   </div>
@@ -1433,6 +1615,16 @@ export function QualityKnowledgeCenterModal({
                       className="px-3.5 py-2 text-xs font-black text-white bg-teal-600 hover:bg-teal-700 rounded-lg shadow-xs transition-all active:scale-95 cursor-pointer"
                     >
                       이 지식을 조사 패키지로 사용
+                    </button>
+                  )}
+                  {onOpenKnowledgeManager && (
+                    <button
+                      type="button"
+                      onClick={onOpenKnowledgeManager}
+                      className="px-3 py-2 text-xs font-bold text-teal-700 bg-teal-50 hover:bg-teal-100 border border-teal-200 rounded-lg transition-colors cursor-pointer"
+                      title="지식 검색·삭제 관리창 열기"
+                    >
+                      지식 관리
                     </button>
                   )}
                 </div>
@@ -1510,6 +1702,7 @@ export function QualityKnowledgeCenterModal({
         </div>
 
       </div>
+      </KcErrorBoundary>
     </div>
   );
 }

@@ -3,6 +3,7 @@ import { getSavedReports } from "../components/ReportListDrawer";
 import { CLAIM_PRESETS, INITIAL_REPORT_DATA } from "../data/presets";
 import { COMPLETED_HISTORICAL_CLAIMS } from "../data/completedHistoricalClaims";
 import { mergePresetData } from "./storage";
+import { toLocalDateString } from "./localDate";
 import { loadAllClaimKnowledge } from "./claimKnowledgeStorage";
 
 export interface PastClaimSearchFilters {
@@ -80,25 +81,32 @@ export function loadAllHistoricalClaims(): PastClaimItem[] {
   const seenIds = new Set<string>();
 
   // 0. 조사자가 승인한 완료 클레임 지식 베이스(Knowledge Base) 최우선 로드
+  // (중첩 누락 항목이 있어도 전체 목록이 중단되지 않도록 폴백 처리, 원본 불변)
   try {
     const knowledgeItems = loadAllClaimKnowledge();
     for (const k of knowledgeItems) {
-      if (k.isApprovedForKnowledge && k.reportSnapshot) {
-        const rep = k.reportSnapshot;
+      if (k && k.isApprovedForKnowledge && k.reportSnapshot) {
+        const rep: any = k.reportSnapshot;
+        const basic: any = k.basicInfo || {};
+        const conclu: any = k.conclusionInfo || {};
+        const repInfo: any = k.reportInfo || {};
         const targetId = rep.id || k.id;
         if (!seenIds.has(targetId)) {
           seenIds.add(targetId);
           items.push({
             id: targetId,
             report: rep,
-            receivedAt: rep.customerClaim?.receivedAt || rep.issueDate || k.registeredAt.split("T")[0],
-            productName: k.basicInfo.productName,
-            claimType: k.basicInfo.claimType,
-            lotNumber: k.basicInfo.lotNumber,
-            manufactureLine: k.basicInfo.manufactureLine,
-            researcherName: k.reportInfo.researcherName,
+            receivedAt:
+              rep.customerClaim?.receivedAt ||
+              rep.issueDate ||
+              (typeof k.registeredAt === "string" ? k.registeredAt.split("T")[0] : "2026-01-01"),
+            productName: basic.productName || "(이름 없음)",
+            claimType: basic.claimType || "",
+            lotNumber: basic.lotNumber || "",
+            manufactureLine: basic.manufactureLine || "",
+            researcherName: repInfo.researcherName || "",
             claimDetailsSnippet: (rep.customerClaim?.claimDetails || "").slice(0, 120),
-            investigationStatus: k.conclusionInfo.isCauseIdentified ? "원인 규명 완료" : "조사 완료",
+            investigationStatus: conclu.isCauseIdentified ? "원인 규명 완료" : "조사 완료",
           });
         }
       }
@@ -322,7 +330,7 @@ export function createCopiedClaimReport(
   const currentYear = new Date().getFullYear();
   const randomSeq = String(Math.floor(Math.random() * 899) + 100);
   const newDocNumber = `광동 QM ${currentYear}-C${randomSeq}`;
-  const todayStr = new Date().toISOString().split("T")[0];
+  const todayStr = toLocalDateString();
 
   const originalRefId = sourceReport.docNumber?.trim() || sourceReport.id;
 

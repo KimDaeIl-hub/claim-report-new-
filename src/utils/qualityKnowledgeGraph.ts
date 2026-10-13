@@ -96,6 +96,215 @@ export interface InterlinkedKnowledgeGraph {
   knowledgeItems: ClaimKnowledgeItem[];
 }
 
+/** 탭별 검색 범위 안내 (빈 결과 안내용) */
+export const KC_SEARCH_SCOPES: Record<string, string> = {
+  products: "제품명·코드·용량·포장·제조처·라인",
+  manufacturers: "제조처명·소재지·담당 품목군",
+  processes: "공정명·흐름·단계·설명",
+  claimTypes: "유형명·설명·위험요인",
+  templates: "프리셋명·설명·분류",
+  phrases: "제목·본문·유형·항목",
+  pastClaims: "제품·유형·Lot·라인·조사자",
+  knowledge: "제품·유형·Lot·원인분야·상세·제조처",
+};
+
+function includesCI(haystack: string | undefined | null, q: string): boolean {
+  return !!haystack && haystack.toLowerCase().includes(q);
+}
+
+/** 안전 소문자 (비문자열이면 빈 문자열 — 렌더/매칭 중단 방지, 원본 불변) */
+function S(v: unknown): string {
+  return typeof v === "string" ? v.toLowerCase() : "";
+}
+
+/** 안전 배열 (비배열이면 빈 배열) */
+function A<T>(v: T[] | undefined | null): T[] {
+  return Array.isArray(v) ? v : [];
+}
+
+/**
+ * 지식 항목 렌더 안전 정규화 (읽기 전용 복사본)
+ * - 저장소에 중첩 객체가 누락된 항목이 있어도 화면 전체가 중단되지 않도록
+ *   동일한 스키마 형태의 안전한 기본값으로 채운 복사본을 반환
+ * - 원본 객체·저장 데이터는 절대 변경하지 않음 (쓰기 없음)
+ * - 누락 표시는 렌더 측에서 "(이름 없음)" 등 폴백 텍스트로 처리
+ */
+export function normalizeKnowledgeItem(k: ClaimKnowledgeItem): ClaimKnowledgeItem {
+  if (!k || typeof k !== "object") return k;
+  // Object.assign 사용 (스프레드 중복 키 TS2783 회피, 뒤 인자가 우선 — 기존값 유지 의미)
+  const basic = (k.basicInfo || {}) as Partial<ClaimKnowledgeItem["basicInfo"]>;
+  const inv = (k.investigationInfo || {}) as Partial<ClaimKnowledgeItem["investigationInfo"]>;
+  const res = (k.resultInfo || {}) as Partial<ClaimKnowledgeItem["resultInfo"]>;
+  const con = (k.conclusionInfo || {}) as Partial<ClaimKnowledgeItem["conclusionInfo"]>;
+  const rep = (k.reportInfo || {}) as Partial<ClaimKnowledgeItem["reportInfo"]>;
+  return {
+    ...k,
+    basicInfo: Object.assign(
+      {
+        productName: "",
+        productType: "",
+        manufacturer: "",
+        manufactureLine: "",
+        lotNumber: "",
+        claimType: "",
+      },
+      basic
+    ),
+    investigationInfo: Object.assign(
+      {
+        investigationItems: [],
+        investigationMethods: [],
+        relatedProcesses: [],
+        relatedEquipments: [],
+        analysisMethods: [],
+      },
+      inv
+    ),
+    resultInfo: Object.assign(
+      {
+        storageSampleResult: "",
+        storageSampleStatus: "",
+        manufacturingRecordResult: "",
+        manufacturingRecordStatus: "",
+        qualityInspectionResult: "",
+        qualityInspectionStatus: "",
+        processInvestigationResult: "",
+        processInvestigationStatus: "",
+        rawMaterialResult: "",
+        rawMaterialStatus: "",
+      },
+      res
+    ),
+    conclusionInfo: Object.assign(
+      {
+        isCauseIdentified: false,
+        causeStatusLabel: "원인 불명",
+        causeCategory: "",
+        causeDetail: "",
+        conclusionSummary: [],
+        preventiveMeasures: "",
+      },
+      con
+    ),
+    reportInfo: Object.assign(
+      {
+        usedPhrases: [],
+        usedPhraseCount: 0,
+        attachmentCount: 0,
+        attachmentSummaries: [],
+        photoCount: 0,
+        photoSummaries: [],
+        researcherName: "",
+        completedDate: "",
+      },
+      rep
+    ),
+  };
+}
+/**
+ * 지식센터 통합 검색 (탭별 필터, 읽기 전용)
+ * - 기존 인라인 필터와 동등 + 검색 필드 확장
+ * - Master(제품)와 승인 과거클레임은 분리 유지 (합치지 않음)
+ */
+export function filterKnowledgeCenter(graph: InterlinkedKnowledgeGraph, rawQuery: string) {
+  const q = (rawQuery || "").toLowerCase().trim();
+  const products = graph.products.filter((p) => {
+    if (!q) return true;
+    return (
+      includesCI(p.productName, q) ||
+      includesCI(p.productCode, q) ||
+      includesCI(p.volume, q) ||
+      includesCI(p.packageType, q) ||
+      includesCI(p.containerType, q) ||
+      includesCI(p.manufacturer, q) ||
+      includesCI(p.manufactureLine, q) ||
+      includesCI(p.subProductType, q) ||
+      A(p.primaryClaimTypes).some((ct) => includesCI(ct, q))
+    );
+  });
+  const manufacturers = graph.manufacturers.filter((m) => {
+    if (!q) return true;
+    return (
+      includesCI(m.name, q) ||
+      includesCI(m.factoryLocation, q) ||
+      includesCI(m.teamOrCategory, q)
+    );
+  });
+  const processes = graph.processes.filter((pr) => {
+    if (!q) return true;
+    return (
+      includesCI(pr.name, q) ||
+      includesCI(pr.processFlow, q) ||
+      includesCI(pr.description, q) ||
+      A(pr.processSteps).some((s) => includesCI(s, q))
+    );
+  });
+  const claimTypes = graph.claimTypes.filter((ct) => {
+    if (!q) return true;
+    return (
+      includesCI(ct.name, q) ||
+      includesCI(ct.description, q) ||
+      includesCI(ct.category, q) ||
+      includesCI(ct.riskLevel, q) ||
+      A(ct.commonRootCauses).some((c) => includesCI(c, q))
+    );
+  });
+  const templates = graph.templates.filter((tpl) => {
+    if (!q) return true;
+    return (
+      includesCI(tpl.name, q) ||
+      includesCI(tpl.description, q) ||
+      includesCI(tpl.category, q) ||
+      includesCI(tpl.subCategory, q)
+    );
+  });
+  const phrases = graph.phrases.filter((ph) => {
+    if (!q) return true;
+    return (
+      includesCI(ph.title, q) ||
+      includesCI(ph.content, q) ||
+      includesCI(ph.claimType, q) ||
+      includesCI(ph.investigationItem, q) ||
+      includesCI(ph.fieldKey, q)
+    );
+  });
+  const pastClaims = graph.pastClaims.filter((c) => {
+    if (!q) return true;
+    return (
+      includesCI(c.productName, q) ||
+      includesCI(c.claimType, q) ||
+      includesCI(c.lotNumber, q) ||
+      includesCI(c.manufactureLine, q) ||
+      includesCI(c.researcherName, q) ||
+      includesCI(c.receivedAt, q)
+    );
+  });
+  // 지식 항목은 렌더 안전 정규화 후 필터 (중첩 누락 시에도 화면 중단 없음)
+  const knowledgeItems = graph.knowledgeItems.map(normalizeKnowledgeItem).filter((k) => {
+    if (!q) return true;
+    return (
+      includesCI(k.basicInfo.productName, q) ||
+      includesCI(k.basicInfo.claimType, q) ||
+      includesCI(k.basicInfo.lotNumber, q) ||
+      includesCI(k.basicInfo.manufacturer, q) ||
+      includesCI(k.basicInfo.manufactureLine, q) ||
+      includesCI(k.conclusionInfo.causeCategory, q) ||
+      includesCI(k.conclusionInfo.causeDetail, q) ||
+      A(k.conclusionInfo.conclusionSummary).some((s) => includesCI(s, q))
+    );
+  });
+  return {
+    products,
+    manufacturers,
+    processes,
+    claimTypes,
+    templates,
+    phrases,
+    pastClaims,
+    knowledgeItems,
+  };
+}
+
 /**
  * 전체 8대 지식 저장소 통합 데이터베이스 로드
  */
@@ -127,7 +336,7 @@ export function loadCompleteKnowledgeGraph(): InterlinkedKnowledgeGraph {
  * 특정 제품(Product) 기준 연계된 모든 정보 360° 조회
  */
 export function getProduct360View(product: ProductMaster, graph: InterlinkedKnowledgeGraph) {
-  const pName = product.productName.toLowerCase();
+  const pName = S(product.productName);
 
   // 1. 제조처 & 라인
   const manufacturer = graph.manufacturers.find(
@@ -142,21 +351,21 @@ export function getProduct360View(product: ProductMaster, graph: InterlinkedKnow
   const process = graph.processes.find(
     (pr) =>
       pr.id === product.relatedProcessPresetId ||
-      (manufacturer && pr.name.includes(manufacturer.name)) ||
-      pr.name.includes(product.manufacturer)
+      (manufacturer && S(pr.name).includes(S(manufacturer.name))) ||
+      S(pr.name).includes(S(product.manufacturer))
   ) || null;
 
   // 3. 관련 클레임 유형
   const linkedClaimTypes = graph.claimTypes.filter((ct) => {
-    if (product.primaryClaimTypes?.some((pct) => ct.name.includes(pct) || pct.includes(ct.name))) return true;
+    if (A(product.primaryClaimTypes).some((pct) => ct.name.includes(S(pct)) || S(pct).includes(ct.name))) return true;
     return false;
   });
 
   // 4. 관련 조사 템플릿
   const templates = graph.templates.filter((tpl) => {
-    const tName = tpl.name.toLowerCase();
-    const tDesc = (tpl.description || "").toLowerCase();
-    const tProduct = (tpl.data.productInfo?.productName || "").toLowerCase();
+    const tName = S(tpl.name);
+    const tDesc = S(tpl.description);
+    const tProduct = S(tpl.data?.productInfo?.productName);
     return (
       tName.includes(pName) ||
       tProduct.includes(pName) ||
@@ -167,7 +376,7 @@ export function getProduct360View(product: ProductMaster, graph: InterlinkedKnow
 
   // 5. 관련 상용구
   const phrases = graph.phrases.filter((ph) => {
-    const text = `${ph.title} ${ph.content} ${ph.category || ""}`.toLowerCase();
+    const text = `${ph.title || ""} ${ph.content || ""} ${ph.category || ""}`.toLowerCase();
     if (text.includes(pName)) return true;
     if (linkedClaimTypes.some((ct) => ph.category && ph.category.includes(ct.category))) return true;
     return false;
@@ -175,13 +384,13 @@ export function getProduct360View(product: ProductMaster, graph: InterlinkedKnow
 
   // 6. 과거 클레임 이력
   const pastClaims = graph.pastClaims.filter((c) => {
-    const cProd = c.productName.toLowerCase();
+    const cProd = S(c.productName);
     return cProd.includes(pName) || pName.includes(cProd);
   });
 
   // 7. 품질 지식 (Knowledge)
   const knowledgeItems = graph.knowledgeItems.filter((k) => {
-    const kProd = k.basicInfo.productName.toLowerCase();
+    const kProd = S(k.basicInfo?.productName);
     return kProd.includes(pName) || pName.includes(kProd);
   });
 
@@ -202,31 +411,31 @@ export function getProduct360View(product: ProductMaster, graph: InterlinkedKnow
  * 특정 제조처(Manufacturer) 기준 연계된 모든 정보 360° 조회
  */
 export function getManufacturer360View(mfg: ManufacturerMaster, graph: InterlinkedKnowledgeGraph) {
-  const mName = mfg.name.toLowerCase();
+  const mName = S(mfg.name);
 
   const lines = graph.manufactureLines.filter((l) => l.manufacturerId === mfg.id);
 
   const products = graph.products.filter(
-    (p) => p.manufacturerId === mfg.id || p.manufacturer.toLowerCase().includes(mName)
+    (p) => p.manufacturerId === mfg.id || S(p.manufacturer).includes(mName)
   );
 
   const process = graph.processes.find(
-    (pr) => pr.id === mfg.defaultProcessPresetId || pr.name.toLowerCase().includes(mName) || mName.includes(pr.name.toLowerCase())
+    (pr) => pr.id === mfg.defaultProcessPresetId || S(pr.name).includes(mName) || mName.includes(S(pr.name))
   ) || null;
 
   const pastClaims = graph.pastClaims.filter((c) => {
-    const cLine = c.manufactureLine.toLowerCase();
-    const cRepMfg = (c.report?.productInfo?.manufacturer || "").toLowerCase();
+    const cLine = S(c.manufactureLine);
+    const cRepMfg = S(c.report?.productInfo?.manufacturer);
     return cLine.includes(mName) || cRepMfg.includes(mName);
   });
 
   const knowledgeItems = graph.knowledgeItems.filter((k) => {
-    const kMfg = k.basicInfo.manufacturer.toLowerCase();
+    const kMfg = S(k.basicInfo?.manufacturer);
     return kMfg.includes(mName);
   });
 
   const templates = graph.templates.filter((tpl) => {
-    const tMfg = (tpl.data.productInfo?.manufacturer || "").toLowerCase();
+    const tMfg = S(tpl.data?.productInfo?.manufacturer);
     return tMfg.includes(mName);
   });
 
@@ -251,38 +460,39 @@ export function getManufacturer360View(mfg: ManufacturerMaster, graph: Interlink
  * 특정 제조공정(Process) 기준 연계된 모든 정보 360° 조회
  */
 export function getProcess360View(process: FactoryProcessPreset, graph: InterlinkedKnowledgeGraph) {
-  const prName = process.name.toLowerCase();
+  const prName = S(process.name);
 
   const manufacturer = graph.manufacturers.find(
-    (m) => prName.includes(m.name.toLowerCase()) || m.name.toLowerCase().includes(prName)
+    (m) => prName.includes(S(m.name)) || S(m.name).includes(prName)
   ) || null;
 
   const products = graph.products.filter(
     (p) =>
       p.relatedProcessPresetId === process.id ||
       (manufacturer && p.manufacturerId === manufacturer.id) ||
-      prName.includes(p.manufacturer.toLowerCase())
+      prName.includes(S(p.manufacturer))
   );
 
   const pastClaims = graph.pastClaims.filter((c) => {
-    const cFlow = (c.report?.manufacturingProcess?.processFlow || "").toLowerCase();
-    const cMfg = (c.report?.productInfo?.manufacturer || "").toLowerCase();
-    return cFlow.includes(prName) || (manufacturer && cMfg.includes(manufacturer.name.toLowerCase()));
+    const cFlow = S(c.report?.manufacturingProcess?.processFlow);
+    const cMfg = S(c.report?.productInfo?.manufacturer);
+    return cFlow.includes(prName) || (manufacturer && cMfg.includes(S(manufacturer.name)));
   });
 
   const knowledgeItems = graph.knowledgeItems.filter((k) => {
-    const kProc = k.investigationInfo.relatedProcesses.join(" ").toLowerCase();
-    const kMfg = k.basicInfo.manufacturer.toLowerCase();
-    return kProc.includes(prName) || (manufacturer && kMfg.includes(manufacturer.name.toLowerCase()));
+    const kProc = A(k.investigationInfo?.relatedProcesses).join(" ").toLowerCase();
+    const kMfg = S(k.basicInfo?.manufacturer);
+    return kProc.includes(prName) || (manufacturer && kMfg.includes(S(manufacturer.name)));
   });
 
   const templates = graph.templates.filter((tpl) => {
-    const tFlow = (tpl.data.manufacturingProcess?.processFlow || "").toLowerCase();
+    const tFlow = S(tpl.data?.manufacturingProcess?.processFlow);
     return tFlow.includes(prName);
   });
 
   const phrases = graph.phrases.filter((ph) => {
-    return ph.fieldKey.includes("process") || ph.fieldKey.includes("filtration") || ph.fieldKey.includes("cleaning");
+    const key = S(ph.fieldKey);
+    return key.includes("process") || key.includes("filtration") || key.includes("cleaning");
   });
 
   return {
@@ -304,30 +514,30 @@ export function getClaimType360View(claimType: QualityClaimTypeItem, graph: Inte
   const ctCat = claimType.category.toLowerCase();
 
   const products = graph.products.filter((p) => {
-    return p.primaryClaimTypes?.some((pct) => pct.toLowerCase().includes(ctName) || ctName.includes(pct.toLowerCase()));
+    return A(p.primaryClaimTypes).some((pct) => ctName.includes(S(pct)) || S(pct).includes(ctName));
   });
 
   const templates = graph.templates.filter((tpl) => {
-    return tpl.category === ctCat || tpl.subCategory === ctCat || tpl.name.toLowerCase().includes(ctName);
+    return tpl.category === ctCat || tpl.subCategory === ctCat || S(tpl.name).includes(ctName);
   });
 
   const phrases = graph.phrases.filter((ph) => {
-    return (ph.category || "").toLowerCase().includes(ctCat) || ph.title.toLowerCase().includes(ctName);
+    return S(ph.category).includes(ctCat) || S(ph.title).includes(ctName);
   });
 
   const pastClaims = graph.pastClaims.filter((c) => {
-    const cType = c.claimType.toLowerCase();
+    const cType = S(c.claimType);
     return cType.includes(ctName) || ctName.includes(cType);
   });
 
   const knowledgeItems = graph.knowledgeItems.filter((k) => {
-    const kType = k.basicInfo.claimType.toLowerCase();
+    const kType = S(k.basicInfo?.claimType);
     return kType.includes(ctName) || ctName.includes(kType);
   });
 
   const processes = graph.processes.filter((pr) => {
     if (ctCat === "foreign") return pr.filtrationAnalysis || pr.cleaningAnalysis;
-    if (ctCat === "spoilage") return pr.criticalControlPoint.includes("살균") || pr.criticalControlPoint.includes("CCP");
+    if (ctCat === "spoilage") return S(pr.criticalControlPoint).includes("살균") || S(pr.criticalControlPoint).includes("ccp");
     return true;
   });
 

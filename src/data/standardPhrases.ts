@@ -868,6 +868,86 @@ export const DEFAULT_STANDARD_PHRASES: StandardPhrase[] = [
 
 const MANAGED_PHRASES_STORAGE_KEY = "food_qc_managed_phrases_v5_kwangdong_internal";
 
+// 개인 즐겨찾기: 상용구 ID만 저장 (원문 복제 없음, 회사 표준 데이터 불변)
+const FAVORITE_PHRASES_STORAGE_KEY = "food_qc_phrase_favorites_v1";
+
+// 최근 사용: ID + 횟수 + 최근시각 (최대 20건, 빈도 정렬용)
+const RECENT_PHRASES_STORAGE_KEY = "food_qc_phrase_recent_v1";
+
+export interface RecentPhraseUse {
+  id: string;
+  count: number;
+  lastUsedAt: number;
+}
+
+function readJsonArray<T>(key: string): T[] {
+  try {
+    if (typeof localStorage === "undefined") return [];
+    const raw = localStorage.getItem(key);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as T[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeJson(key: string, value: unknown): void {
+  try {
+    if (typeof localStorage === "undefined") return;
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch (e) {
+    console.warn(`Notice: Unable to save ${key}`, e);
+  }
+}
+
+export function loadFavoritePhraseIds(): string[] {
+  const ids = readJsonArray<string>(FAVORITE_PHRASES_STORAGE_KEY);
+  return ids.filter((id) => typeof id === "string");
+}
+
+export function saveFavoritePhraseIds(ids: string[]): void {
+  writeJson(FAVORITE_PHRASES_STORAGE_KEY, Array.from(new Set(ids.filter((id) => typeof id === "string"))));
+}
+
+export function isFavoritePhraseId(id: string): boolean {
+  return loadFavoritePhraseIds().includes(id);
+}
+
+/** 즐겨찾기 토글 (ID 참조만 변경, 상용구 본문·회사 표준 불변) */
+export function toggleFavoritePhraseId(id: string): string[] {
+  const current = loadFavoritePhraseIds();
+  const next = current.includes(id) ? current.filter((x) => x !== id) : [...current, id];
+  saveFavoritePhraseIds(next);
+  return next;
+}
+
+export function loadRecentPhraseUses(): RecentPhraseUse[] {
+  const uses = readJsonArray<RecentPhraseUse>(RECENT_PHRASES_STORAGE_KEY);
+  return uses.filter((u) => u && typeof u.id === "string");
+}
+
+/** 최근 사용 기록 (빈도+최근시각 갱신, 최대 20건) */
+export function recordRecentPhraseUse(id: string): RecentPhraseUse[] {
+  if (!id) return loadRecentPhraseUses();
+  const uses = loadRecentPhraseUses();
+  const prev = uses.find((u) => u.id === id);
+  const next = [
+    { id, count: (prev?.count || 0) + 1, lastUsedAt: Date.now() },
+    ...uses.filter((u) => u.id !== id),
+  ].slice(0, 20);
+  writeJson(RECENT_PHRASES_STORAGE_KEY, next);
+  return next;
+}
+
+/** 최근·빈도 순 ID 목록 (최근시각 우선, 동률은 횟수 우선) */
+export function getRecentPhraseIdsOrdered(limit = 10): string[] {
+  return loadRecentPhraseUses()
+    .sort((a, b) => b.lastUsedAt - a.lastUsedAt || b.count - a.count)
+    .slice(0, limit)
+    .map((u) => u.id);
+}
+
 export function loadAllPhrases(): StandardPhrase[] {
   try {
     const raw = localStorage.getItem(MANAGED_PHRASES_STORAGE_KEY);

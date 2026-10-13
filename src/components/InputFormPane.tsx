@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import {
   User,
   Package,
@@ -32,6 +32,7 @@ import {
   Factory,
   Workflow,
   RotateCcw,
+  RefreshCw,
   ArrowRight,
   ChevronLeft,
   Copy,
@@ -41,15 +42,18 @@ import {
 import { ReportData, PhysicochemicalItem, AdditionalTestItem, ClaimPreset, InvestigationStatus, InvestigationItemSelection, InvestigationResultsData, ProductMaster, ProcessStepMaster } from "../types";
 import { getAllPresets } from "../data/presets";
 import { findProductById, findProductByName } from "../data/productMaster";
+import { findManufacturerById, findLineById } from "../data/manufacturerMaster";
 import { loadAllProcessSteps } from "../data/processStepMaster";
 import { ProductMasterModal } from "./ProductMasterModal";
 import { ProcessStepDetailModal } from "./ProcessStepDetailModal";
 import { parseMhtFile, ParsedMhtClaimData } from "../utils/mhtParser";
 import { mergePresetData, isUserPhoto } from "../utils/storage";
+import { stripInternalPrefix } from "../utils/displayName";
 import { AiPolishButton } from "./AiPolishButton";
 import { PhraseDropdown } from "./PhraseDropdown";
 import { SituationPhraseRecommendationCard } from "./SituationPhraseRecommendationCard";
-import { PhotoUploadField } from "./PhotoUploadField";
+import { InlinePhraseSuggest } from "./InlinePhraseSuggest";
+import { UnifiedAttachmentManager, LinkedPhotoView, resolvePhotoLinks } from "./UnifiedAttachmentManager";
 import { TestPrincipleBox } from "./TestPrincipleBox";
 import { CompanyLogoUploader } from "./CompanyLogoUploader";
 import { PresetSelectorBar } from "./PresetSelectorBar";
@@ -63,6 +67,7 @@ import {
   assembleInvestigationSentence,
   InvestigationItemKey,
 } from "../data/investigationTemplates";
+import { getInvestigationConditionKey } from "../data/investigationPackageBuilder";
 import { InvestigationDetailInputs } from "../types";
 import { getUnexaminedInvestigationItems } from "../utils/investigationStatus";
 import { validateReport } from "../utils/reportValidator";
@@ -104,6 +109,9 @@ interface InputFormPaneProps {
   onOpenProductMaster?: (selectionMode?: boolean) => void;
   onOpenPackageModal?: () => void;
   onOpenCompleteKnowledge?: () => void;
+  onPreviewReport?: () => void;
+  onComposeEmail?: () => void;
+  onPrintReport?: () => void;
   activeSectionId?: string;
   activeTab?: string;
   onTabChange?: (tab: string) => void;
@@ -122,6 +130,9 @@ export function InputFormPane({
   onOpenProductMaster,
   onOpenPackageModal,
   onOpenCompleteKnowledge,
+  onPreviewReport,
+  onComposeEmail,
+  onPrintReport,
   activeSectionId,
   activeTab: propActiveTab,
   onTabChange,
@@ -155,13 +166,63 @@ export function InputFormPane({
     }
   };
 
-  // 현재 입력된 제품과 일치하는 Product Master 탐색 (Product ID 또는 제품명 기준)
+  // 현재 입력된 제품과 일치하는 Product Master 탐색
+  // (Master 선택 후 텍스트 직접 수정 시 연결 해제 상태로 취급 → 직접 입력 전환)
   const matchedProduct = useMemo(() => {
-    return (
-      findProductById(report.productInfo.productId) ||
-      findProductByName(report.productInfo.productName)
-    );
+    const byId = report.productInfo.productId
+      ? findProductById(report.productInfo.productId)
+      : undefined;
+    if (byId) {
+      return byId.productName === report.productInfo.productName ? byId : null;
+    }
+    return findProductByName(report.productInfo.productName) || null;
   }, [report.productInfo.productId, report.productInfo.productName]);
+
+  // Master 연결 상태 판정 (연결됨 / 직접 입력 / 미입력)
+  const productLinkState: "linked" | "direct" | "empty" = report.productInfo.productId && matchedProduct
+    ? "linked"
+    : report.productInfo.productName?.trim()
+    ? "direct"
+    : "empty";
+  const linkedManufacturer = report.productInfo.manufacturerId
+    ? findManufacturerById(report.productInfo.manufacturerId)
+    : undefined;
+  const manufacturerLinkState: "linked" | "direct" | "empty" =
+    linkedManufacturer && linkedManufacturer.name === report.productInfo.manufacturer
+      ? "linked"
+      : report.productInfo.manufacturer?.trim()
+      ? "direct"
+      : "empty";
+  const linkedLine = report.productInfo.manufactureLineId
+    ? findLineById(report.productInfo.manufactureLineId)
+    : undefined;
+  const lineLinkState: "linked" | "direct" | "empty" =
+    linkedLine && linkedLine.lineName === report.productInfo.manufactureLine
+      ? "linked"
+      : report.productInfo.manufactureLine?.trim()
+      ? "direct"
+      : "empty";
+
+  const renderLinkBadge = (state: "linked" | "direct" | "empty") => {
+    if (state === "linked") {
+      return (
+        <span className="px-1.5 py-0.2 rounded text-[10px] font-bold bg-blue-100 text-blue-800 border border-blue-300">
+          Master 연결됨
+        </span>
+      );
+    }
+    if (state === "direct") {
+      return (
+        <span
+          className="px-1.5 py-0.2 rounded text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-300"
+          title="Master ID 없이 직접 입력된 값입니다. 보고서에는 정상 표시되며, Master 기반 자동 연결은 제한됩니다."
+        >
+          직접 입력
+        </span>
+      );
+    }
+    return null;
+  };
 
   // 제품 마스터 선택 시 리포트 적용
   const handleApplyProductFromMaster = (product: ProductMaster) => {
@@ -248,16 +309,51 @@ export function InputFormPane({
   const [isStep2FilterOpen, setIsStep2FilterOpen] = useState<boolean>(false);
   const [isUnexaminedWarningExpanded, setIsUnexaminedWarningExpanded] = useState<boolean>(false);
   const [mhtStatus, setMhtStatus] = useState<{ message: string; type: "success" | "error" } | null>(null);
+  const [isMhtOpen, setIsMhtOpen] = useState(false);
   const [isDraggingMht, setIsDraggingMht] = useState(false);
   const [pendingMhtData, setPendingMhtData] = useState<{
     fileName: string;
     parsed: ParsedMhtClaimData;
   } | null>(null);
   const [isMhtReviewOpen, setIsMhtReviewOpen] = useState(false);
+  // MHT 영역: 기본 접힘, 파일 상태 있으면 자동 펼침 (기능 유지)
+  const isMhtExpanded = isMhtOpen || !!mhtStatus || !!pendingMhtData;
   const [isFactoryModalOpen, setIsFactoryModalOpen] = useState(false);
   const [factoryToast, setFactoryToast] = useState<string | null>(null);
   const [factoryPresets, setFactoryPresets] = useState<FactoryProcessPreset[]>(() => loadAllFactoryPresets());
 
+  // 조사 조건(제품·제조번호·클레임유형) 변경 감지 → 패키지 재구성 안내
+  // (마운트 시점을 기준선으로 삼고, 재구성 적용·취소 시 기준선 갱신. 자동 삭제 없음)
+  const conditionBaselineRef = useRef<string | null>(null);
+  const expectPackageApplyRef = useRef(false);
+  const [conditionNoticeVisible, setConditionNoticeVisible] = useState(false);
+  const conditionSig = getInvestigationConditionKey(
+    report.productInfo.productName,
+    report.productInfo.lotNumber,
+    `${report.customerClaim.claimType || ""}|${selectedClaimTypes.join(",")}`
+  );
+  if (conditionBaselineRef.current === null) {
+    conditionBaselineRef.current = conditionSig;
+  }
+  useEffect(() => {
+    if (expectPackageApplyRef.current) {
+      // 패키지 적용(또는 모달 확인) 후에는 새 조건을 기준선으로 채택
+      conditionBaselineRef.current = conditionSig;
+      expectPackageApplyRef.current = false;
+      setConditionNoticeVisible(false);
+      return;
+    }
+    setConditionNoticeVisible(conditionSig !== conditionBaselineRef.current);
+  }, [conditionSig]);
+
+  const handleReassemblePackage = () => {
+    expectPackageApplyRef.current = true;
+    if (onOpenPackageModal) onOpenPackageModal();
+  };
+  const handleDismissConditionNotice = () => {
+    conditionBaselineRef.current = conditionSig;
+    setConditionNoticeVisible(false);
+  };
   // 과거 유사 클레임 11대 구조적 유사도 컨텍스트
   const currentClaimContext: CurrentClaimContext = useMemo(() => {
     return {
@@ -758,17 +854,27 @@ export function InputFormPane({
     });
   };
 
-  const updateAttachments = (patch: Partial<ReportData["attachments"]>) => {
-    const newAttachments = { ...report.attachments, ...patch };
-    const newLotHistory =
-      patch.attachment2Photos !== undefined
-        ? { ...report.lotHistory, retainedSamplePhotos: patch.attachment2Photos }
-        : report.lotHistory;
-    onChange({
-      ...report,
-      attachments: newAttachments,
-      lotHistory: newLotHistory,
+  // 탭 연결 사진 조회 (단일 첨부 데이터 참조, 복사본 없음, 레거시 버킷 기본값 적용)
+  const getLinkedPhotos = (target: "intake" | "quality") => {
+    const buckets = [
+      { key: "customerPhotos", list: report.customerClaim?.customerPhotos || [] },
+      { key: "retainedSamplePhotos", list: report.lotHistory?.retainedSamplePhotos || [] },
+      { key: "attachment1Photos", list: report.attachments?.attachment1Photos || [] },
+      { key: "attachment2Photos", list: report.attachments?.attachment2Photos || [] },
+      { key: "attachment3Photos", list: report.attachments?.attachment3Photos || [] },
+    ] as const;
+    const seen = new Set<string>();
+    const result: typeof buckets[number]["list"] = [];
+    buckets.forEach(({ key, list }) => {
+      list.forEach((p) => {
+        if (!p || seen.has(p.id)) return;
+        if (resolvePhotoLinks(p, key).includes(target)) {
+          seen.add(p.id);
+          result.push(p);
+        }
+      });
     });
+    return result;
   };
 
   // Physicochemical test item helpers
@@ -987,72 +1093,71 @@ export function InputFormPane({
     }
   };
 
-  // 4단계 스마트 워크플로우 스텝 정의
+  // 3단계 업무 흐름 스텝 정의 (접수/현품 → 품질 조사 → 보고서/회신)
   const WORKFLOW_STEPS = [
     {
-      id: "basic",
-      label: "Step 1. 기본정보",
-      shortLabel: "1. 기본정보",
-      desc: "접수 & 제품정보",
+      id: "intake",
+      label: "STEP 1. 접수 / 기본정보 / 현품",
+      shortLabel: "1. 접수/현품",
+      desc: "접수·제품·현품 확보",
       icon: User,
     },
     {
-      id: "investigation",
-      label: "Step 2. 조사결과",
-      shortLabel: "2. 조사결과",
-      desc: "현품·공정·Lot이력",
+      id: "investigate",
+      label: "STEP 2. 품질 조사",
+      shortLabel: "2. 품질 조사",
+      desc: "분석·공정·Lot·원인 검토",
       icon: Microscope,
     },
     {
-      id: "cause",
-      label: "Step 3. 원인 및 대책",
-      shortLabel: "3. 원인/대책",
-      desc: "원인판정·재발방지",
-      icon: AlertOctagon,
-    },
-    {
-      id: "conclusion",
-      label: "Step 4. 결론 및 사진",
-      shortLabel: "4. 결론/사진",
-      desc: "요약·사과문·증빙사진",
+      id: "review",
+      label: "STEP 3. 보고서 검토 / 회신",
+      shortLabel: "3. 보고서/회신",
+      desc: "결론·첨부·검토·회신",
       icon: FileCheck,
     },
   ];
 
-  // 활성 탭 정규화
+  // 활성 탭 정규화 (레거시 탭 ID 유지: 기존 저장·검증·네비게이션 호환)
   const getNormalizedStep = (tabId: string): string => {
-    if (tabId === "claim" || tabId === "product" || tabId === "basic") return "basic";
-    if (tabId === "analysis" || tabId === "process" || tabId === "lot" || tabId === "investigation")
-      return "investigation";
-    if (tabId === "cause") return "cause";
-    if (tabId === "conclusion" || tabId === "attachments") return "conclusion";
-    return "basic";
+    if (tabId === "claim" || tabId === "product" || tabId === "basic" || tabId === "intake") return "intake";
+    if (
+      tabId === "analysis" ||
+      tabId === "process" ||
+      tabId === "lot" ||
+      tabId === "investigation" ||
+      tabId === "cause" ||
+      tabId === "investigate"
+    )
+      return "investigate";
+    if (tabId === "conclusion" || tabId === "attachments" || tabId === "review") return "review";
+    return "intake";
   };
 
   const currentStep = getNormalizedStep(activeTab);
   const reportProgress = calculateReportProgress(report);
 
-  // 스텝별 필수 미완료 통계 산출
+  // 스텝별 필수 미완료 통계 산출 (progressTracker sectionKey는 그대로 사용)
   const stepStats = {
-    basic: {
+    intake: {
       unwritten: reportProgress.sections
         .filter((s) => s.sectionKey === "basic")
         .flatMap((s) => s.items)
         .filter((i) => i.isRequired && (i.status === "미작성" || i.status === "작성중")).length,
     },
-    investigation: {
+    investigate: {
       unwritten: reportProgress.sections
-        .filter((s) => s.sectionKey === "analysis" || s.sectionKey === "process" || s.sectionKey === "lot")
+        .filter(
+          (s) =>
+            s.sectionKey === "analysis" ||
+            s.sectionKey === "process" ||
+            s.sectionKey === "lot" ||
+            s.sectionKey === "cause"
+        )
         .flatMap((s) => s.items)
         .filter((i) => i.isRequired && (i.status === "미작성" || i.status === "작성중")).length,
     },
-    cause: {
-      unwritten: reportProgress.sections
-        .filter((s) => s.sectionKey === "cause")
-        .flatMap((s) => s.items)
-        .filter((i) => i.isRequired && (i.status === "미작성" || i.status === "작성중")).length,
-    },
-    conclusion: {
+    review: {
       unwritten: reportProgress.sections
         .filter((s) => s.sectionKey === "conclusion")
         .flatMap((s) => s.items)
@@ -1060,14 +1165,29 @@ export function InputFormPane({
     },
   };
 
+  // 검증 이슈의 레거시 탭 ID → 3단계 매핑 (Progress Indicator 상태 표시용)
+  const getStepOfValidationTab = (tabId: string): "intake" | "investigate" | "review" => {
+    if (tabId === "claim" || tabId === "product") return "intake";
+    if (tabId === "analysis" || tabId === "process" || tabId === "lot" || tabId === "cause")
+      return "investigate";
+    return "review";
+  };
+
+  const getStepValidationIssues = (stepId: "intake" | "investigate" | "review") => {
+    const stepIssues = validationSummary.issues.filter((i) => getStepOfValidationTab(i.tabId) === stepId);
+    const hasError = stepIssues.some((i) => i.severity === "error");
+    const hasWarning = stepIssues.some((i) => i.severity === "warning");
+    return { count: stepIssues.length, hasError, hasWarning };
+  };
+
   const getStepPhotoBadge = (stepId: string) => {
-    if (stepId === "basic") {
+    if (stepId === "intake") {
       return (report.customerClaim.customerPhotos || []).filter(isUserPhoto).length;
     }
-    if (stepId === "investigation") {
+    if (stepId === "investigate") {
       return (report.lotHistory.retainedSamplePhotos || []).filter(isUserPhoto).length;
     }
-    if (stepId === "conclusion") {
+    if (stepId === "review") {
       return (
         (report.attachments.attachment1Photos || []).filter(isUserPhoto).length +
         (report.attachments.attachment2Photos || []).filter(isUserPhoto).length +
@@ -1131,12 +1251,12 @@ export function InputFormPane({
     // 1. 현재 입력값 자동 저장 (중요 조건 준수: 다음 단계로 이동 전 현재 입력값 저장)
     onChange({ ...report });
 
-    // 2. 모든 필수 항목이 완료된 경우 -> [최종 검토 →]
+    // 2. 모든 필수 항목이 완료된 경우 -> [최종 검토 →] (STEP 3 보고서 검토)
     if (nextRequiredAction.isAllCompleted || nextRequiredAction.type === "final_review") {
       if (onOpenValidation) {
         onOpenValidation();
       } else {
-        setActiveTab("conclusion");
+        setActiveTab("review");
       }
       return;
     }
@@ -1173,104 +1293,159 @@ export function InputFormPane({
     }
   };
 
-  // 이전 단계 이동 핸들러 (기존 화면 이동 기능 보존)
+  // 이전 단계 이동 핸들러 (입력값 유지: onChange로 현재값 저장 후 이동, 차단 없음)
   const handlePreviousStep = () => {
     onChange({ ...report });
-    const stepOrder: WorkflowStepId[] = ["basic", "investigation", "cause", "conclusion"];
+    const stepOrder: WorkflowStepId[] = ["intake", "investigate", "review"];
     const currentIdx = stepOrder.indexOf(currentStep as WorkflowStepId);
     if (currentIdx > 0) {
       setActiveTab(stepOrder[currentIdx - 1]);
     }
   };
 
+  // 다음 단계 이동 핸들러 (입력값 유지: 저장 후 이동, 미작성 있어도 차단하지 않고 안내만)
+  const handleNextStep = () => {
+    onChange({ ...report });
+    const stepOrder: WorkflowStepId[] = ["intake", "investigate", "review"];
+    const currentIdx = stepOrder.indexOf(currentStep as WorkflowStepId);
+    if (currentIdx >= 0 && currentIdx < stepOrder.length - 1) {
+      setActiveTab(stepOrder[currentIdx + 1]);
+    }
+  };
+
+  // STEP 이동 시 입력값 보존 안내 (차단 없이 부족 항목만 토스트 안내)
+  const handleStepButtonClick = (stepId: string) => {
+    onChange({ ...report });
+    setActiveTab(stepId);
+  };
+
+  // 다른 STEP의 특정 필드로 점프 (입력값 저장 후 이동·스크롤·강조, 차단 없음)
+  const handleJumpToStepField = (stepId: string, fieldId?: string) => {
+    onChange({ ...report });
+    setActiveTab(stepId);
+    if (fieldId) {
+      setTimeout(() => {
+        const el = document.getElementById(fieldId);
+        if (el) {
+          el.scrollIntoView({ behavior: "smooth", block: "center" });
+          el.classList.add("ring-4", "ring-blue-400", "ring-offset-2", "transition-all", "duration-300");
+          setTimeout(() => {
+            el.classList.remove("ring-4", "ring-blue-400", "ring-offset-2");
+          }, 2500);
+        }
+      }, 150);
+    }
+  };
+
   return (
     <div className="flex flex-col h-full bg-white border-r border-slate-200">
       {/* ======================================================== */}
-      {/* [1열] 상단 4단계 스텝 네비게이션 & 진행률 & 사전 검증 (항상 노출) */}
+      {/* [1열] 상단 3단계 Progress Indicator & 진행률 & 사전 검증 (항상 노출) */}
+      {/* ① 접수/현품 → ② 품질 조사 → ③ 보고서/회신 (미작성 있어도 이동 차단 없음) */}
       {/* ======================================================== */}
       <div className="shrink-0 bg-white border-b border-slate-200 px-3 py-2 flex flex-col md:flex-row md:items-center justify-between gap-2.5 shadow-2xs">
-        {/* 데스크톱/태블릿: 4단계 스텝 바 (균등 4분할) */}
-        <div className="hidden sm:grid grid-cols-4 gap-1.5 flex-1 max-w-3xl">
+        {/* 데스크톱/태블릿: 3단계 스텝 바 (균등 3분할 + 진행 화살표) */}
+        <div className="hidden sm:flex items-stretch gap-1 flex-1 max-w-3xl">
           {WORKFLOW_STEPS.map((step, idx) => {
             const Icon = step.icon;
             const isActive = currentStep === step.id;
             const unwritten = stepStats[step.id as keyof typeof stepStats]?.unwritten ?? 0;
             const photoCount = getStepPhotoBadge(step.id);
-            const isCompleted = unwritten === 0;
+            const stepIssues = getStepValidationIssues(step.id as "intake" | "investigate" | "review");
+            const isCompleted = unwritten === 0 && !stepIssues.hasError;
+            const isLast = idx === WORKFLOW_STEPS.length - 1;
 
             return (
-              <button
-                key={step.id}
-                type="button"
-                id={`step-btn-${step.id}`}
-                onClick={() => setActiveTab(step.id)}
-                className={`relative flex items-center justify-between px-3 py-2 rounded-xl text-left transition-all border ${
-                  isActive
-                    ? "bg-blue-600 text-white border-blue-600 shadow-xs ring-2 ring-blue-600/20"
-                    : "bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200"
-                }`}
-              >
-                <div className="flex items-center gap-2 min-w-0">
-                  <div
-                    className={`w-6 h-6 rounded-lg flex items-center justify-center shrink-0 text-xs font-black ${
-                      isActive
-                        ? "bg-white/20 text-white"
-                        : isCompleted
-                        ? "bg-emerald-100 text-emerald-800"
-                        : "bg-slate-200 text-slate-700"
-                    }`}
-                  >
-                    {idx + 1}
-                  </div>
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-1">
-                      <span className="text-xs font-bold truncate">
-                        {step.shortLabel}
-                      </span>
-                    </div>
-                    <span
-                      className={`text-[10px] block truncate ${
-                        isActive ? "text-blue-100" : "text-slate-400"
-                      }`}
-                    >
-                      {step.desc}
-                    </span>
-                  </div>
-                </div>
-
-                <div className="flex items-center gap-1 shrink-0 ml-1.5">
-                  {isCompleted ? (
-                    <span
-                      className={`w-4 h-4 rounded-full flex items-center justify-center ${
-                        isActive ? "bg-white text-blue-700" : "bg-emerald-500 text-white"
-                      }`}
-                      title="필수 항목 작성 완료"
-                    >
-                      <Check className="w-2.5 h-2.5 stroke-[3]" />
-                    </span>
-                  ) : (
-                    <span
-                      className={`px-1.5 py-0.2 rounded-full text-[10px] font-black ${
+              <div key={step.id} className="flex items-stretch gap-1 flex-1">
+                <button
+                  type="button"
+                  id={`step-btn-${step.id}`}
+                  onClick={() => handleStepButtonClick(step.id)}
+                  className={`relative flex-1 flex items-center justify-between px-3 py-2 rounded-xl text-left transition-all border ${
+                    isActive
+                      ? "bg-blue-600 text-white border-blue-600 shadow-xs ring-2 ring-blue-600/20"
+                      : "bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200"
+                  }`}
+                  title={`${step.label}${unwritten > 0 ? ` (미작성 ${unwritten}건)` : ""}${
+                    stepIssues.hasError ? ` (오류 ${stepIssues.count}건)` : ""
+                  } — 클릭 시 입력값 유지하고 이동합니다`}
+                >
+                  <div className="flex items-center gap-2 min-w-0">
+                    <div
+                      className={`w-6 h-6 rounded-lg flex items-center justify-center shrink-0 text-xs font-black ${
                         isActive
                           ? "bg-white/20 text-white"
-                          : "bg-amber-100 text-amber-900 border border-amber-300"
-                      }`}
-                      title={`미작성 필수 항목 ${unwritten}건`}
-                    >
-                      {unwritten}
-                    </span>
-                  )}
-                  {photoCount > 0 && (
-                    <span
-                      className={`text-[9px] px-1 py-0.2 rounded font-bold ${
-                        isActive ? "bg-blue-800 text-blue-100" : "bg-blue-50 text-blue-700"
+                          : isCompleted
+                          ? "bg-emerald-100 text-emerald-800"
+                          : stepIssues.hasError
+                          ? "bg-red-100 text-red-800"
+                          : "bg-slate-200 text-slate-700"
                       }`}
                     >
-                      📷{photoCount}
-                    </span>
-                  )}
-                </div>
-              </button>
+                      {idx + 1}
+                    </div>
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-1">
+                        <span className="text-xs font-bold truncate">
+                          {step.shortLabel}
+                        </span>
+                      </div>
+                      <span
+                        className={`text-[10px] block truncate ${
+                          isActive ? "text-blue-100" : "text-slate-400"
+                        }`}
+                      >
+                        {step.desc}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-1 shrink-0 ml-1.5">
+                    {stepIssues.hasError ? (
+                      <span
+                        className="px-1.5 py-0.2 rounded-full text-[10px] font-black bg-red-500 text-white"
+                        title={`검증 오류 ${stepIssues.count}건 — 클릭해도 이동 가능, STEP 3 검토 허브에서 확인`}
+                      >
+                        !{stepIssues.count}
+                      </span>
+                    ) : isCompleted ? (
+                      <span
+                        className={`w-4 h-4 rounded-full flex items-center justify-center ${
+                          isActive ? "bg-white text-blue-700" : "bg-emerald-500 text-white"
+                        }`}
+                        title="필수 항목 작성 완료"
+                      >
+                        <Check className="w-2.5 h-2.5 stroke-[3]" />
+                      </span>
+                    ) : (
+                      <span
+                        className={`px-1.5 py-0.2 rounded-full text-[10px] font-black ${
+                          isActive
+                            ? "bg-white/20 text-white"
+                            : "bg-amber-100 text-amber-900 border border-amber-300"
+                        }`}
+                        title={`미작성 필수 항목 ${unwritten}건 — 클릭해도 이동 가능`}
+                      >
+                        {unwritten}
+                      </span>
+                    )}
+                    {photoCount > 0 && (
+                      <span
+                        className={`text-[9px] px-1 py-0.2 rounded font-bold ${
+                          isActive ? "bg-blue-800 text-blue-100" : "bg-blue-50 text-blue-700"
+                        }`}
+                      >
+                        📷{photoCount}
+                      </span>
+                    )}
+                  </div>
+                </button>
+                {!isLast && (
+                  <div className="flex items-center shrink-0 px-0.5" aria-hidden="true">
+                    <ArrowRight className="w-4 h-4 text-slate-300" />
+                  </div>
+                )}
+              </div>
             );
           })}
         </div>
@@ -1572,10 +1747,46 @@ export function InputFormPane({
             </button>
           </div>
         )}
+
+        {/* 조사 조건 변경 시 패키지 재구성 안내 (직접 입력 결과·사진은 건드리지 않음) */}
+        {conditionNoticeVisible && onOpenPackageModal && (
+          <div className="p-3 bg-blue-50 border border-blue-300 rounded-2xl shadow-2xs flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <div className="w-8 h-8 rounded-xl bg-blue-600 text-white flex items-center justify-center shrink-0 shadow-xs">
+                <RefreshCw className="w-4 h-4" />
+              </div>
+              <div className="min-w-0">
+                <span className="text-xs font-bold text-slate-900 block">
+                  조사 조건(제품·제조번호·클레임 유형)이 변경되었습니다. 조사 패키지를 다시 구성하시겠습니까?
+                </span>
+                <span className="text-[11px] text-slate-500 block">
+                  직접 입력한 조사 결과·측정값·원인·사진·첨부자료는 유지됩니다.
+                </span>
+              </div>
+            </div>
+            <div className="flex items-center gap-1.5 shrink-0">
+              <button
+                type="button"
+                onClick={handleDismissConditionNotice}
+                className="px-3 py-1.5 text-xs font-semibold text-slate-600 hover:text-slate-900 bg-white hover:bg-slate-100 border border-slate-300 rounded-xl transition-colors cursor-pointer"
+              >
+                취소
+              </button>
+              <button
+                type="button"
+                id="btn-form-reassemble-package"
+                onClick={handleReassemblePackage}
+                className="px-3 py-1.5 text-xs font-black text-slate-950 bg-gradient-to-r from-amber-400 to-yellow-300 hover:from-amber-300 hover:to-yellow-200 border border-amber-400 rounded-xl transition-all cursor-pointer"
+              >
+                다시 구성
+              </button>
+            </div>
+          </div>
+        )}
         {/* ======================================================== */}
         {/* [Step 1] 기본정보 (1. 클레임 접수 + 2. 대상 제품 정보 통합) */}
         {/* ======================================================== */}
-        {(currentStep === "basic" || activeTab === "claim" || activeTab === "product") && (
+        {(currentStep === "intake" || activeTab === "claim" || activeTab === "product" || activeTab === "basic") && (
           <div className="space-y-6 animate-in fade-in duration-100">
             {/* [복사 이력 추적 안내 배너 - 소비자용 보고서에는 미표시, 내부 관리용] */}
             {report.copiedFromClaimId && (
@@ -1610,15 +1821,14 @@ export function InputFormPane({
                   </span>
                   <h3 className="text-sm font-bold text-slate-900">클레임 접수 및 고객 정보</h3>
                 </div>
-                <div className="flex items-center gap-2">
+                {/* 과거클레임 진입 통합: 섹션 헤더 중복 버튼 제거 → 하단 자동추천카드 + 품질 지식센터로 일원화 (hidden) */}
+                <div className="hidden">
                   <button
                     type="button"
                     id="btn-load-past-claims"
                     onClick={handleOpenPastClaims}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-blue-700 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-xl transition-all shadow-2xs cursor-pointer active:scale-95"
                     title="과거에 접수된 유사 클레임 이력을 검색하고 상세 내용을 확인합니다."
                   >
-                    <History className="w-3.5 h-3.5 text-blue-600" />
                     <span>이전 클레임 불러오기</span>
                   </button>
                   <span className="text-xs text-slate-400 hidden sm:inline">불만 인입 경위 및 고객 정보 기재</span>
@@ -1716,35 +1926,22 @@ export function InputFormPane({
               )}
             </div>
 
-            {/* [과거 클레임 불러오기 및 참고 바로가기] */}
-            <div className="p-3 bg-gradient-to-r from-blue-50/70 via-indigo-50/30 to-slate-50 border border-blue-200 rounded-xl shadow-2xs flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-              <div className="flex items-center gap-2.5 min-w-0">
-                <div className="w-8 h-8 rounded-lg bg-blue-600 text-white flex items-center justify-center shrink-0 shadow-xs">
-                  <History className="w-4 h-4" />
-                </div>
-                <div>
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-xs font-bold text-slate-900">과거 유사 클레임 이력 검색 및 열람</span>
-                    <span className="px-1.5 py-0.2 rounded text-[10px] font-bold bg-blue-100 text-blue-800">조회 전용</span>
-                  </div>
-                  <p className="text-[11px] text-slate-500 leading-tight">
-                    제품명, 클레임 유형, 제조번호, 제조라인, 접수일, 조사자, 키워드로 과거 조사 기록을 검색하여 확인합니다.
-                  </p>
-                </div>
-              </div>
-
+            {/* [과거 클레임 안내] 진입 통합: 중복 버튼 제거 → 하단 자동추천카드에서 확인 (상세검색은 품질 지식센터 과거사례 탭) */}
+            <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-xl flex items-center justify-between gap-3">
+              <p className="text-[11px] text-slate-500 leading-tight">
+                과거 유사 사례는 아래 <strong className="text-slate-700">자동 추천 카드</strong>에서 확인하세요. 상세 검색은 상단 <strong className="text-slate-700">품질 지식센터 → 과거사례</strong> 탭을 이용하세요.
+              </p>
               <button
                 type="button"
                 id="btn-quick-past-claims"
                 onClick={handleOpenPastClaims}
-                className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-bold text-blue-700 bg-white hover:bg-blue-600 hover:text-white border border-blue-300 hover:border-blue-600 rounded-xl transition-all shadow-2xs cursor-pointer active:scale-95 shrink-0"
+                className="hidden"
               >
-                <History className="w-3.5 h-3.5" />
                 <span>이전 클레임 불러오기</span>
               </button>
             </div>
 
-            {/* [그룹웨어 .mht 파일 자동 입력 드롭존] */}
+            {/* [그룹웨어 .mht 파일 자동 입력] 접기식 (기능 유지, 기본 접힘) */}
             <div
               onDragOver={(e) => {
                 e.preventDefault();
@@ -1757,26 +1954,66 @@ export function InputFormPane({
                 const file = e.dataTransfer.files?.[0];
                 if (file) handleMhtFileUpload(file);
               }}
-              className={`p-3.5 rounded-xl border-2 border-dashed transition-all ${
+              className={`rounded-xl border-2 border-dashed transition-all overflow-hidden ${
                 isDraggingMht
                   ? "border-blue-500 bg-blue-50/70"
                   : "border-blue-300 bg-gradient-to-r from-blue-50/50 via-slate-50 to-indigo-50/40 hover:border-blue-400"
               }`}
             >
-              <div className="flex items-start justify-between gap-3">
-                <div className="flex items-start gap-2.5">
-                  <div className="p-2 bg-blue-600 text-white rounded-lg shrink-0 mt-0.5 shadow-xs">
+              <button
+                type="button"
+                onClick={() => setIsMhtOpen(!isMhtOpen)}
+                className="w-full p-3 flex items-center justify-between gap-3 text-left cursor-pointer"
+                title={isMhtExpanded ? "MHT 자동 입력 접기" : "MHT 자동 입력 펼치기"}
+              >
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <div className="p-2 bg-blue-600 text-white rounded-lg shrink-0 shadow-xs">
                     <FileUp className="w-4 h-4" />
                   </div>
-                  <div>
-                    <div className="flex items-center gap-2">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
                       <span className="text-xs font-bold text-slate-900">
                         그룹웨어 클레임 보고서(.mht) 파일 자동 입력
                       </span>
                       <span className="text-[10px] font-semibold bg-blue-100 text-blue-800 px-1.5 py-0.5 rounded">
                         원클릭 파싱
                       </span>
+                      {mhtStatus && (
+                        <span
+                          className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                            mhtStatus.type === "success"
+                              ? "bg-emerald-100 text-emerald-800"
+                              : "bg-red-100 text-red-800"
+                          }`}
+                        >
+                          {mhtStatus.type === "success" ? "✓ 파싱 완료" : "파싱 확인 필요"}
+                        </span>
+                      )}
+                      {pendingMhtData && (
+                        <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-blue-600 text-white">
+                          {pendingMhtData.fileName}
+                        </span>
+                      )}
                     </div>
+                    {!isMhtExpanded && (
+                      <p className="text-[11px] text-slate-500 truncate">
+                        필요할 때 펼쳐서 사용 (접수 사진·제품 정보 자동 입력)
+                      </p>
+                    )}
+                  </div>
+                </div>
+                {isMhtExpanded ? (
+                  <ChevronUp className="w-4 h-4 text-slate-400 shrink-0" />
+                ) : (
+                  <ChevronDown className="w-4 h-4 text-slate-400 shrink-0" />
+                )}
+              </button>
+
+              {isMhtExpanded && (
+              <div className="px-3.5 pb-3.5">
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex items-start gap-2.5">
+                  <div>
                     <p className="text-[11px] text-slate-600 mt-0.5 leading-relaxed">
                       그룹웨어 전자결재에서 전달받은 <strong className="font-semibold text-slate-800">.mht 보고서</strong>를 올리면 소비자명, 제품명, 사용기한, 접수일자, 불만내용 등이 자동으로 채워집니다.
                     </p>
@@ -1834,6 +2071,8 @@ export function InputFormPane({
                     </button>
                   </div>
                 </div>
+              )}
+              </div>
               )}
             </div>
 
@@ -1896,7 +2135,17 @@ export function InputFormPane({
                   id="field-claim-product-name"
                   type="text"
                   value={report.productInfo.productName}
-                  onChange={(e) => updateProductInfo({ productName: e.target.value })}
+                  onChange={(e) => {
+                    const nextName = e.target.value;
+                    const linked = report.productInfo.productId
+                      ? findProductById(report.productInfo.productId)
+                      : undefined;
+                    updateProductInfo({
+                      productName: nextName,
+                      // Master 선택 후 텍스트 직접 수정 → 직접 입력 상태로 전환 (ID 해제, 텍스트 유지)
+                      ...(linked && linked.productName !== nextName ? { productId: "" } : {}),
+                    });
+                  }}
                   placeholder="예: 썬키스트 감귤주스 1.5L"
                   className={`w-full text-xs px-3 py-2 border rounded-md focus:outline-none font-medium transition-colors ${getRequiredFieldClass(
                     report.productInfo.productName
@@ -2005,11 +2254,12 @@ export function InputFormPane({
             </div>
 
             <div id="field-customer-photos">
-              <PhotoUploadField
-                label="고객 접수 사진 (인입 시 전달받은 사진)"
-                photos={report.customerClaim.customerPhotos || []}
-                onChange={(photos) => updateCustomerClaim({ customerPhotos: photos })}
-                maxPhotos={3}
+              <p className="block text-xs font-semibold text-slate-700 mb-1.5">
+                고객 접수 사진 (보고서/회신에서 연결된 사진 미리보기)
+              </p>
+              <LinkedPhotoView
+                photos={getLinkedPhotos("intake")}
+                emptyText="연결된 사진이 없습니다. 3. 보고서/회신 영역에서 사진을 등록하고 이 탭에 연결하세요."
               />
             </div>
             </div>
@@ -2023,6 +2273,7 @@ export function InputFormPane({
                   </span>
                   <h3 className="text-sm font-bold text-slate-900">접수 대상 제품 정보</h3>
                 </div>
+                {/* 제품 선택 단일 진입점: [제품 Master에서 선택] 1곳 유지, 나머지 중복 진입 hidden */}
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
@@ -2037,10 +2288,9 @@ export function InputFormPane({
                   <button
                     type="button"
                     onClick={() => handleOpenProductMaster(false)}
-                    className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 border border-slate-200 rounded-xl transition-all cursor-pointer"
+                    className="hidden"
                     title="제품 Master 관리창 열기 (제품 추가/수정/비활성화)"
                   >
-                    <Edit3 className="w-3 h-3" />
                     <span className="hidden sm:inline">Master 관리</span>
                   </button>
                   <span className="text-xs text-slate-400 hidden lg:inline">제품 라벨 및 생산 이력 식별 번호</span>
@@ -2057,13 +2307,13 @@ export function InputFormPane({
                     <div className="min-w-0 text-xs">
                       <div className="flex items-center gap-2 flex-wrap">
                         <span className="font-bold text-slate-900 truncate">
-                          마스터 연동: <strong className="font-mono text-blue-800">[{matchedProduct.productCode}]</strong> {matchedProduct.productName}
+                          마스터 연동: <strong className="font-mono text-blue-800">[{matchedProduct.productCode}]</strong> {stripInternalPrefix(matchedProduct.productName)}
                         </span>
                         <span className="px-1.5 py-0.2 rounded text-[10px] font-bold bg-blue-100 text-blue-800 border border-blue-200">
                           {matchedProduct.productType}
                         </span>
                         <span className="text-[11px] text-slate-600">
-                          {matchedProduct.packageType} · {matchedProduct.volume} · {matchedProduct.manufacturer} {matchedProduct.manufactureLine ? `· ${matchedProduct.manufactureLine}` : ""}
+                          {matchedProduct.packageType} · {matchedProduct.volume} · {stripInternalPrefix(matchedProduct.manufacturer)} {matchedProduct.manufactureLine ? `· ${stripInternalPrefix(matchedProduct.manufactureLine)}` : ""}
                         </span>
                       </div>
                     </div>
@@ -2093,7 +2343,7 @@ export function InputFormPane({
               ) : report.productInfo.productName ? (
                 <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-600 flex items-center justify-between gap-2 flex-wrap">
                   <span className="text-[11px]">
-                    입력된 제품명: <strong>{report.productInfo.productName}</strong> (마스터 미등록 또는 미연결 상태)
+                    입력된 제품명: <strong>{stripInternalPrefix(report.productInfo.productName)}</strong> (마스터 미등록 또는 미연결 상태)
                   </span>
                   <button
                     type="button"
@@ -2113,13 +2363,13 @@ export function InputFormPane({
                     <span className="px-1.5 py-0.2 rounded text-[10px] font-black bg-rose-100 text-rose-700 border border-rose-200">
                       필수
                     </span>
+                    {renderLinkBadge(productLinkState)}
                   </label>
                   <button
                     type="button"
                     onClick={() => handleOpenProductMaster(true)}
-                    className="text-[11px] font-bold text-blue-600 hover:text-blue-800 inline-flex items-center gap-1 cursor-pointer"
+                    className="hidden"
                   >
-                    <Package className="w-3 h-3" />
                     <span>Master 검색</span>
                   </button>
                 </div>
@@ -2127,7 +2377,17 @@ export function InputFormPane({
                   id="field-product-name"
                   type="text"
                   value={report.productInfo.productName}
-                  onChange={(e) => updateProductInfo({ productName: e.target.value })}
+                  onChange={(e) => {
+                    const nextName = e.target.value;
+                    const linked = report.productInfo.productId
+                      ? findProductById(report.productInfo.productId)
+                      : undefined;
+                    updateProductInfo({
+                      productName: nextName,
+                      // Master 선택 후 텍스트 직접 수정 → 직접 입력 상태로 전환 (ID 해제, 텍스트 유지)
+                      ...(linked && linked.productName !== nextName ? { productId: "" } : {}),
+                    });
+                  }}
                   placeholder="예: 비타500 100ml 또는 제품 Master에서 선택"
                   className={`w-full text-xs px-3 py-2 border rounded-md focus:outline-none font-medium transition-colors ${getRequiredFieldClass(
                     report.productInfo.productName
@@ -2145,7 +2405,7 @@ export function InputFormPane({
                 <input
                   id="field-lot-number"
                   type="text"
-                  value={report.productInfo.lotNumber}
+                  value={report.productInfo.lotNumber || ""}
                   onChange={(e) => updateProductInfo({ lotNumber: e.target.value })}
                   placeholder="예: LOT-26A18-F1"
                   className={`w-full text-xs px-3 py-2 border rounded-md focus:outline-none font-mono font-semibold text-blue-900 transition-colors ${getRequiredFieldClass(
@@ -2210,6 +2470,7 @@ export function InputFormPane({
                   <label className="block text-xs font-bold text-slate-800">
                     제조처 구분 및 생산처 선택 (제조공정도 자동 연동)
                   </label>
+                  {/* 제조공정 관리 → 품질 지식센터(공정 탭)로 일원화: 조사 화면에서는 선택/조회만 */}
                   <button
                     type="button"
                     onClick={() => {
@@ -2220,9 +2481,10 @@ export function InputFormPane({
                       }
                     }}
                     className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-bold text-blue-700 bg-white border border-blue-300 hover:bg-blue-50 rounded-lg transition-colors shadow-2xs"
+                    title="제조공정도 관리(추가/수정)는 품질 지식센터 → 제조공정 탭에서 수행합니다"
                   >
                     <Workflow className="w-3.5 h-3.5" />
-                    <span>제조공정도 관리 / 템플릿</span>
+                    <span>제조공정도 관리 (지식센터)</span>
                   </button>
                 </div>
 
@@ -2413,20 +2675,57 @@ export function InputFormPane({
 
                 {/* Final Manufacturer Text Input */}
                 <div>
-                  <label className="block text-[11px] font-semibold text-slate-600 mb-0.5">
-                    최종 표기 제조처명 (공문서 및 보고서 출력용, 직접 수정 가능):
+                  <label className="flex items-center gap-1 text-[11px] font-semibold text-slate-600 mb-0.5">
+                    <span>최종 표기 제조처명 (공문서 및 보고서 출력용, 직접 수정 가능):</span>
+                    {renderLinkBadge(manufacturerLinkState)}
                   </label>
                   <input
                     id="field-manufacturer"
                     type="text"
                     value={report.productInfo.manufacturer}
-                    onChange={(e) => updateProductInfo({ manufacturer: e.target.value })}
+                    onChange={(e) => {
+                      const nextName = e.target.value;
+                      const linked = report.productInfo.manufacturerId
+                        ? findManufacturerById(report.productInfo.manufacturerId)
+                        : undefined;
+                      updateProductInfo({
+                        manufacturer: nextName,
+                        // Master 선택 후 텍스트 직접 수정 → 직접 입력 상태로 전환 (ID 해제, 텍스트 유지)
+                        ...(linked && linked.name !== nextName ? { manufacturerId: "" } : {}),
+                      });
+                    }}
                     placeholder="예: 삼양패키징 광혜원공장 / 광동제약 식품팀 등"
                     className="w-full text-xs px-3 py-2 border border-slate-300 rounded-md focus:ring-1 focus:ring-blue-500 focus:outline-none bg-white font-medium text-slate-900"
                   />
                   <p className="text-[10px] text-slate-500 mt-1">
                     * 위 제조처를 선택하면 조사결과 탭의 <strong>'제조공정 분석(흐름도, 여과망 규격, 세척·살균, 관리점)'</strong> 텍스트가 자동으로 채워집니다. (클레임별 강조 지점은 보존)
                   </p>
+                </div>
+
+                {/* 최종 제조라인명 직접 입력 (Master 미등록 라인도 입력 가능, 자동 등록 없음) */}
+                <div>
+                  <label className="flex items-center gap-1 text-[11px] font-semibold text-slate-600 mb-0.5">
+                    <span>최종 제조라인명 (직접 수정 가능):</span>
+                    {renderLinkBadge(lineLinkState)}
+                  </label>
+                  <input
+                    id="field-manufacture-line"
+                    type="text"
+                    value={report.productInfo.manufactureLine}
+                    onChange={(e) => {
+                      const nextName = e.target.value;
+                      const linked = report.productInfo.manufactureLineId
+                        ? findLineById(report.productInfo.manufactureLineId)
+                        : undefined;
+                      updateProductInfo({
+                        manufactureLine: nextName,
+                        // Master 선택 후 텍스트 직접 수정 → 직접 입력 상태로 전환 (ID 해제, 텍스트 유지)
+                        ...(linked && linked.lineName !== nextName ? { manufactureLineId: "" } : {}),
+                      });
+                    }}
+                    placeholder="예: A라인 / 환제 라인 / 스틱 파우치 라인 등"
+                    className="w-full text-xs px-3 py-2 border border-slate-300 rounded-md focus:ring-1 focus:ring-blue-500 focus:outline-none bg-white font-medium text-slate-900"
+                  />
                 </div>
               </div>
             </div>
@@ -2440,6 +2739,7 @@ export function InputFormPane({
                 onApplyMethods={handleApplySimilarClaimMethods}
                 onUseAsInvestigationPackage={handleUseAsInvestigationPackage}
                 onOpenManualSearch={handleOpenPastClaims}
+                defaultExpanded={false}
               />
             </div>
           </div>
@@ -2448,10 +2748,11 @@ export function InputFormPane({
         {/* ======================================================== */}
         {/* [Step 2] 조사결과 (정밀 과학 분석 + 제조공정 + 동일 Lot 이력 통합) */}
         {/* ======================================================== */}
-        {(currentStep === "investigation" ||
+        {(currentStep === "investigate" ||
           activeTab === "analysis" ||
           activeTab === "process" ||
-          activeTab === "lot") && (
+          activeTab === "lot" ||
+          activeTab === "investigation") && (
           <div className="space-y-6 animate-in fade-in duration-100">
             {/* 서브 섹션 A. 회수 현품 정밀 과학 분석 */}
             <div className="bg-white border border-slate-200 rounded-2xl p-4 sm:p-5 shadow-xs space-y-6">
@@ -2469,7 +2770,7 @@ export function InputFormPane({
                 </div>
               </div>
 
-            {/* 클레임 유형별 맞춤 조사 항목 필터 바 (기본 접힘: 필요 시에만 펼쳐서 세부 조정) */}
+            {/* 맞춤 조사 항목 필터: 상단 공용 설정(유형·프리셋 변경)으로 일원화 — Step 내 중복 편집 UI 제거, 상태만 표시 */}
             <div className="border border-slate-200 rounded-xl overflow-hidden bg-slate-50/80 transition-all">
               <div className="px-3.5 py-2 flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2 min-w-0">
@@ -2478,23 +2779,19 @@ export function InputFormPane({
                     맞춤 조사 항목 필터 설정
                   </span>
                   <span className="text-[11px] text-slate-500 truncate hidden md:inline">
-                    (현재 적용 유형: <strong className="text-slate-700">{selectedClaimTypes.join(", ")}</strong> / {showAllAnalysisItems ? "전체 항목 표시 중" : "유형 맞춤 항목만 표시"})
+                    (현재 적용 유형: <strong className="text-slate-700">{selectedClaimTypes.join(", ")}</strong> / {showAllAnalysisItems ? "전체 항목 표시 중" : "유형 맞춤 항목만 표시"} — 변경은 상단 [유형·프리셋 변경]에서)
                   </span>
                 </div>
                 <button
                   type="button"
                   onClick={() => setIsStep2FilterOpen(!isStep2FilterOpen)}
-                  className={`inline-flex items-center gap-1 text-[11px] font-bold px-2.5 py-1 rounded-lg transition-all shrink-0 ${
-                    isStep2FilterOpen
-                      ? "bg-slate-800 text-white"
-                      : "bg-white hover:bg-blue-50 text-blue-700 border border-blue-200 shadow-2xs"
-                  }`}
+                  className="hidden"
                 >
                   <span>{isStep2FilterOpen ? "필터 접기 ▴" : "항목 필터 설정 ▾"}</span>
                 </button>
               </div>
 
-              {isStep2FilterOpen && (
+              {false && (
                 <div className="p-3.5 bg-white border-t border-slate-200 animate-in fade-in duration-150">
                   <ClaimTypeFilterBar
                     selectedTypes={selectedClaimTypes}
@@ -2619,6 +2916,8 @@ export function InputFormPane({
                         </label>
                         <PhraseDropdown
                           fieldKey="sampleCondition"
+                          currentValue={report.analysisResults.visualInspection.sampleCondition}
+                          pastContext={currentClaimContext}
                           activePresetId={selectedPresetId || undefined}
                           situationContext={{
                             claimType: report.customerClaim?.claimType || "이물",
@@ -2655,6 +2954,19 @@ export function InputFormPane({
                         }
                         placeholder="예: 회수된 현품 잔여량 약 120ml 확인됨. 액상 내 직경 약 1.8mm의 흑색 고형물 침전 관찰됨."
                         className="w-full text-xs p-2.5 border border-slate-300 rounded focus:ring-1 focus:ring-blue-500 focus:outline-none"
+                      />
+                      <InlinePhraseSuggest
+                        fieldKey="sampleCondition"
+                        currentText={report.analysisResults.visualInspection.sampleCondition}
+                        activePresetId={selectedPresetId || undefined}
+                        onInsert={(finalText) =>
+                          updateAnalysisResults({
+                            visualInspection: {
+                              ...report.analysisResults.visualInspection,
+                              sampleCondition: finalText,
+                            },
+                          })
+                        }
                       />
                     </div>
                     <div>
@@ -4059,19 +4371,17 @@ export function InputFormPane({
                       </button>
                     )}
 
+                    {/* 조사 화면에서는 공정 선택/조회만: 표준 공정도를 현재 클레임에 적용 */}
                     <button
                       type="button"
                       onClick={() => {
-                        if (onOpenProcessManager) {
-                          onOpenProcessManager();
-                        } else {
-                          setIsFactoryModalOpen(true);
-                        }
+                        setIsFactoryModalOpen(true);
                       }}
                       className="px-2.5 py-1 text-[11px] font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors flex items-center gap-1 shadow-2xs"
+                      title="표준 제조공정도에서 현재 클레임에 적용할 공정을 선택합니다 (관리·편집은 품질 지식센터)"
                     >
                       <Workflow className="w-3.5 h-3.5" />
-                      <span>제조공정도 템플릿 관리 / 선택</span>
+                      <span>제조공정도 선택 / 조회</span>
                     </button>
                   </div>
                 </div>
@@ -4121,9 +4431,28 @@ export function InputFormPane({
                   })()}
 
                   <div className="mt-2 mb-3">
-                    <label className="block text-[11px] font-semibold text-slate-700 mb-1">
-                      제조공정 조사 내용 (자유 수정 가능)
-                    </label>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="block text-[11px] font-semibold text-slate-700">
+                        제조공정 조사 내용 (자유 수정 가능)
+                      </label>
+                      <PhraseDropdown
+                        fieldKey="processInvestigationNote"
+                        activePresetId={selectedPresetId || undefined}
+                        currentValue={report.manufacturingProcess.processInvestigationNote ?? ""}
+                        pastContext={currentClaimContext}
+                        situationContext={{
+                          claimType: report.customerClaim?.claimType || "이물",
+                          investigationItem: "제조공정",
+                          resultType: "전체",
+                          usageLocation: "분석 내용",
+                          relatedProductType: report.productInfo?.productType || "혼합음료",
+                        }}
+                        onSelectPhrase={(content) =>
+                          updateManufacturingProcess({ processInvestigationNote: content })
+                        }
+                        onOpenManager={onOpenPhraseManager}
+                      />
+                    </div>
                     <textarea
                       id="field-process-investigation-note"
                       rows={2}
@@ -4141,6 +4470,14 @@ export function InputFormPane({
                       }
                       placeholder="제조공정 및 관련 기록을 확인한 결과, 제조과정에서 특이사항은 확인되지 않았습니다."
                       className="w-full text-xs p-2.5 border border-slate-300 rounded-md focus:ring-1 focus:ring-blue-500 focus:outline-none leading-relaxed font-medium"
+                    />
+                    <InlinePhraseSuggest
+                      fieldKey="processInvestigationNote"
+                      currentText={report.manufacturingProcess.processInvestigationNote ?? ""}
+                      activePresetId={selectedPresetId || undefined}
+                      onInsert={(finalText) =>
+                        updateManufacturingProcess({ processInvestigationNote: finalText })
+                      }
                     />
                   </div>
                 </div>
@@ -4231,6 +4568,8 @@ export function InputFormPane({
                     <div className="flex items-center gap-2">
                       <PhraseDropdown
                         fieldKey="filtrationAnalysis"
+                        currentValue={report.manufacturingProcess.filtrationAnalysis}
+                        pastContext={currentClaimContext}
                         activePresetId={selectedPresetId || undefined}
                         situationContext={{
                           claimType: report.customerClaim?.claimType || "이물",
@@ -4273,6 +4612,8 @@ export function InputFormPane({
                     <div className="flex items-center gap-2">
                       <PhraseDropdown
                         fieldKey="cleaningAnalysis"
+                        currentValue={report.manufacturingProcess.cleaningAnalysis}
+                        pastContext={currentClaimContext}
                         activePresetId={selectedPresetId || undefined}
                         situationContext={{
                           claimType: report.customerClaim?.claimType || "이물",
@@ -4401,6 +4742,8 @@ export function InputFormPane({
                     <div className="flex items-center gap-2">
                       <PhraseDropdown
                         fieldKey="productionLogNote"
+                        currentValue={report.lotHistory.productionLogNote}
+                        pastContext={currentClaimContext}
                         activePresetId={selectedPresetId || undefined}
                         situationContext={{
                           claimType: activeClaimTypeKorean,
@@ -4505,6 +4848,12 @@ export function InputFormPane({
                       placeholder="해당 제조번호의 제조기록 및 작업기록을 확인한 결과, 제조 및 품질관리 과정에서 특이사항은 확인되지 않았습니다."
                       className="w-full text-xs p-2.5 border border-slate-300 rounded-md focus:ring-1 focus:ring-blue-500 focus:outline-none leading-relaxed font-medium"
                     />
+                    <InlinePhraseSuggest
+                      fieldKey="productionLogNote"
+                      currentText={report.lotHistory.productionLogNote}
+                      activePresetId={selectedPresetId || undefined}
+                      onInsert={(finalText) => updateLotHistory({ productionLogNote: finalText })}
+                    />
                   </div>
                 </div>
 
@@ -4516,6 +4865,8 @@ export function InputFormPane({
                     </label>
                     <PhraseDropdown
                       fieldKey="qualityTestRecord"
+                      currentValue={report.lotHistory.qualityTestRecord}
+                      pastContext={currentClaimContext}
                       activePresetId={selectedPresetId || undefined}
                       situationContext={{
                         claimType: report.customerClaim?.claimType || "이물",
@@ -4623,6 +4974,8 @@ export function InputFormPane({
                     </label>
                     <PhraseDropdown
                       fieldKey="priorClaimsCount"
+                      currentValue={report.lotHistory.priorClaimsCount || ""}
+                      pastContext={currentClaimContext}
                       activePresetId={selectedPresetId || undefined}
                       onSelectPhrase={(content) =>
                         updateLotHistory({ priorClaimsCount: content })
@@ -4649,6 +5002,8 @@ export function InputFormPane({
                     <div className="flex items-center gap-2">
                       <PhraseDropdown
                         fieldKey="retainedSampleCheck"
+                        currentValue={report.lotHistory.retainedSampleCheck}
+                        pastContext={currentClaimContext}
                         activePresetId={selectedPresetId || undefined}
                         situationContext={{
                           claimType: report.customerClaim?.claimType || "이물",
@@ -4755,15 +5110,22 @@ export function InputFormPane({
                       placeholder="동일 제조번호의 보관품을 확인한 결과, 외관 및 내용물에서 특이사항은 확인되지 않았습니다."
                       className="w-full text-xs p-2.5 border border-slate-300 rounded-md focus:ring-1 focus:ring-blue-500 focus:outline-none leading-relaxed font-medium"
                     />
+                    <InlinePhraseSuggest
+                      fieldKey="retainedSampleCheck"
+                      currentText={report.lotHistory.retainedSampleCheck}
+                      activePresetId={selectedPresetId || undefined}
+                      onInsert={(finalText) => updateLotHistory({ retainedSampleCheck: finalText })}
+                    />
                   </div>
                 </div>
 
                 <div id="field-lot-retained-photos">
-                  <PhotoUploadField
-                    label="동일 Lot 공장 보관품 사진 첨부 (보고서 5번 항목 및 첨부문서에 자동 반영)"
-                    photos={report.lotHistory.retainedSamplePhotos}
-                    onChange={(photos) => updateLotHistory({ retainedSamplePhotos: photos })}
-                    maxPhotos={4}
+                  <p className="text-xs font-semibold text-slate-700 mb-1.5">
+                    동일 Lot 공장 보관품 사진 (보고서/회신에서 연결된 사진 미리보기)
+                  </p>
+                  <LinkedPhotoView
+                    photos={getLinkedPhotos("quality")}
+                    emptyText="연결된 사진이 없습니다. 3. 보고서/회신 영역에서 사진을 등록하고 이 탭에 연결하세요."
                   />
                 </div>
 
@@ -4776,6 +5138,8 @@ export function InputFormPane({
                     <div className="flex items-center gap-2">
                       <PhraseDropdown
                         fieldKey="rawMaterialCheck"
+                        currentValue={report.lotHistory.rawMaterialCheck || ""}
+                        pastContext={currentClaimContext}
                         activePresetId={selectedPresetId || undefined}
                         situationContext={{
                           claimType: report.customerClaim?.claimType || "이물",
@@ -4893,9 +5257,9 @@ export function InputFormPane({
         )}
 
         {/* ======================================================== */}
-        {/* [Step 3] 원인 및 대책 (종합 원인 판정 및 재발방지대책) */}
+        {/* [STEP 2] 원인 검토 (종합 원인 판정 및 재발방지대책) */}
         {/* ======================================================== */}
-        {(currentStep === "cause" || activeTab === "cause") && (
+        {(currentStep === "investigate" || activeTab === "cause") && (
           <div className="space-y-6 animate-in fade-in duration-100">
             <div
               className={`rounded-2xl transition-all ${
@@ -4946,6 +5310,8 @@ export function InputFormPane({
                     <div className="flex items-center gap-2">
                       <PhraseDropdown
                         fieldKey="rootCause"
+                        currentValue={report.rootCauseAndActions.rootCause}
+                        pastContext={currentClaimContext}
                         activePresetId={selectedPresetId || undefined}
                         situationContext={{
                           claimType: report.customerClaim?.claimType || "이물",
@@ -4998,6 +5364,12 @@ export function InputFormPane({
                     placeholder="예: 충진기 밸브 노즐 내 EPDM 고무 패킹의 누적 마찰 마모로 인하여 미세 조각 1점이 충진 시 박리 탈락되어 혼입된 것으로 최종 판정됨."
                     className="w-full text-xs p-3 border border-slate-300 rounded-md focus:ring-1 focus:ring-blue-500 focus:outline-none leading-relaxed font-semibold text-slate-900"
                   />
+                  <InlinePhraseSuggest
+                    fieldKey="rootCause"
+                    currentText={report.rootCauseAndActions.rootCause}
+                    activePresetId={selectedPresetId || undefined}
+                    onInsert={(finalText) => updateRootCause({ rootCause: finalText })}
+                  />
                 </div>
 
                 <div className="p-4 bg-slate-50 rounded-xl border border-slate-200 space-y-3">
@@ -5030,7 +5402,9 @@ export function InputFormPane({
                     <div>
                       <div className="flex justify-end items-center gap-2 mb-1">
                         <PhraseDropdown
-                          fieldKey="preventiveMeasures"
+                          fieldKey="preventiveAction"
+                          currentValue={report.rootCauseAndActions.preventiveMeasures}
+                          pastContext={currentClaimContext}
                           activePresetId={selectedPresetId || undefined}
                           situationContext={{
                             claimType: report.customerClaim?.claimType || "이물",
@@ -5065,7 +5439,7 @@ export function InputFormPane({
                           updateRootCause({ preventiveMeasures: sentence })
                         }
                         onOpenPhraseManager={onOpenPhraseManager}
-                        fieldKey="preventiveMeasures"
+                        fieldKey="preventiveAction"
                       />
 
                       <textarea
@@ -5096,12 +5470,132 @@ export function InputFormPane({
         )}
 
         {/* ======================================================== */}
-        {/* [Step 4] 결론 및 사진 (요약, 사과문, 직인 설정, 증빙 사진 통합) */}
+        {/* [STEP 3] 결론·첨부·보고서 검토 (요약, 사과문, 직인 설정, 증빙 사진 통합) */}
         {/* ======================================================== */}
-        {(currentStep === "conclusion" ||
+        {(currentStep === "review" ||
           activeTab === "conclusion" ||
           activeTab === "attachments") && (
           <div className="space-y-6 animate-in fade-in duration-100">
+            {/* STEP 3 보고서 검토 허브 (검증·미리보기·회신·인쇄·완료 바로가기) */}
+            <div className="bg-gradient-to-r from-slate-900 via-blue-950 to-slate-900 border border-slate-700 rounded-2xl p-4 sm:p-5 shadow-xs space-y-3 text-white">
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <div className="flex items-center gap-2">
+                  <span className="w-6 h-6 rounded-lg bg-emerald-500 text-white font-bold text-xs flex items-center justify-center">
+                    <Check className="w-3.5 h-3.5 stroke-[3]" />
+                  </span>
+                  <div>
+                    <h3 className="text-sm font-bold">STEP 3. 보고서 검토 / 회신</h3>
+                    <p className="text-[11px] text-slate-300">
+                      조사 결과·원인·결론 확인 → 보고서 미리보기 → 상담팀 회신 → 인쇄 → 완료·지식화
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-1.5 text-[11px] font-bold">
+                  {validationSummary.errorCount > 0 ? (
+                    <span className="px-2 py-0.5 rounded-full bg-red-500/20 text-red-200 border border-red-400/40">
+                      오류 {validationSummary.errorCount}건 보완 필요
+                    </span>
+                  ) : validationSummary.warningCount > 0 ? (
+                    <span className="px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-200 border border-amber-400/40">
+                      경고 {validationSummary.warningCount}건 확인 권장
+                    </span>
+                  ) : (
+                    <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-200 border border-emerald-400/40">
+                      검증 통과
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              {/* 원인·재발방지 요약 (읽기 전용 recap, 수정은 STEP 2에서) */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5 text-xs">
+                <div className="p-3 rounded-xl bg-white/5 border border-white/10">
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="font-bold text-slate-200">원인 판정 요약</span>
+                    <button
+                      type="button"
+                      onClick={() => handleJumpToStepField("investigate", "field-root-cause")}
+                      className="text-[11px] font-bold text-blue-300 hover:text-white underline cursor-pointer"
+                    >
+                      STEP 2에서 수정 →
+                    </button>
+                  </div>
+                  <p className="text-slate-300 leading-relaxed">
+                    {(report.rootCauseAndActions.rootCause || "미작성").slice(0, 140)}
+                    {(report.rootCauseAndActions.rootCause || "").length > 140 ? "…" : ""}
+                  </p>
+                </div>
+                <div className="p-3 rounded-xl bg-white/5 border border-white/10">
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="font-bold text-slate-200">재발방지/조치 요약</span>
+                    <button
+                      type="button"
+                      onClick={() => handleJumpToStepField("investigate", "field-preventive-measures")}
+                      className="text-[11px] font-bold text-blue-300 hover:text-white underline cursor-pointer"
+                    >
+                      STEP 2에서 수정 →
+                    </button>
+                  </div>
+                  <p className="text-slate-300 leading-relaxed">
+                    {(report.rootCauseAndActions.preventiveMeasures || "미작성").slice(0, 140)}
+                    {(report.rootCauseAndActions.preventiveMeasures || "").length > 140 ? "…" : ""}
+                  </p>
+                </div>
+              </div>
+
+              {/* 검토·회신 바로가기 (기존 기능 재호출, 신규 로직 없음) */}
+              <div className="flex flex-wrap items-center gap-2">
+                {onOpenValidation && (
+                  <button
+                    type="button"
+                    onClick={onOpenValidation}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-slate-900 bg-white hover:bg-slate-100 rounded-lg transition-colors cursor-pointer"
+                  >
+                    <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
+                    <span>사전 검증</span>
+                  </button>
+                )}
+                {onPreviewReport && (
+                  <button
+                    type="button"
+                    onClick={onPreviewReport}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-white bg-blue-600 hover:bg-blue-500 rounded-lg transition-colors cursor-pointer"
+                  >
+                    <span>A4 보고서 미리보기</span>
+                    <ArrowRight className="w-3.5 h-3.5" />
+                  </button>
+                )}
+                {onComposeEmail && (
+                  <button
+                    type="button"
+                    onClick={onComposeEmail}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg transition-colors cursor-pointer"
+                  >
+                    <span>상담팀 이메일 회신</span>
+                    <ArrowRight className="w-3.5 h-3.5" />
+                  </button>
+                )}
+                {onPrintReport && (
+                  <button
+                    type="button"
+                    onClick={onPrintReport}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-white bg-red-600 hover:bg-red-500 rounded-lg transition-colors cursor-pointer"
+                  >
+                    <span>PDF / 인쇄</span>
+                  </button>
+                )}
+                {onOpenCompleteKnowledge && (
+                  <button
+                    type="button"
+                    onClick={onOpenCompleteKnowledge}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-black text-white bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 rounded-lg transition-colors cursor-pointer"
+                  >
+                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-200" />
+                    <span>조사 완료 & 지식화</span>
+                  </button>
+                )}
+              </div>
+            </div>
             {/* 서브 섹션 A. 결론 요약 및 고객 안내 사과문 & 서명 설정 */}
             <div className="bg-white border border-slate-200 rounded-2xl p-4 sm:p-5 shadow-xs space-y-4">
               <div className="flex items-center justify-between pb-3 border-b border-slate-100">
@@ -5165,6 +5659,8 @@ export function InputFormPane({
                 </label>
                 <PhraseDropdown
                   fieldKey="apologyText"
+                  currentValue={report.conclusion.apologyText}
+                  pastContext={currentClaimContext}
                   activePresetId={selectedPresetId || undefined}
                   situationContext={{
                     claimType: report.customerClaim?.claimType || "이물",
@@ -5202,6 +5698,12 @@ export function InputFormPane({
                 onChange={(e) => updateConclusion({ apologyText: e.target.value })}
                 placeholder="다시 한번 당사 제품을 애용해 주시는 고객님께 불편을 드린 점에 대하여 진심으로 사과를 드립니다..."
                 className="w-full text-xs p-3 border border-slate-300 rounded-md focus:ring-1 focus:ring-blue-500 focus:outline-none leading-relaxed"
+              />
+              <InlinePhraseSuggest
+                fieldKey="apologyText"
+                currentText={report.conclusion.apologyText}
+                activePresetId={selectedPresetId || undefined}
+                onInsert={(finalText) => updateConclusion({ apologyText: finalText })}
               />
 
               {/* [요청 08] 내부용 이메일 vs 소비자용 안내문 명확 분리 안내 가이드 */}
@@ -5286,6 +5788,23 @@ export function InputFormPane({
                   <span className="text-[10px] text-slate-500 mt-0.5 block">
                     * 보고서 하단 공식 서명부: (주)광동제약 식품품질경영팀 팀장 {report.teamLeader ? report.teamLeader.replace(/팀장/g, "").trim() : "신준호"}
                   </span>
+                  <label className="flex items-start gap-2 mt-2 p-2.5 bg-amber-50/60 border border-amber-200 rounded-lg cursor-pointer">
+                    <input
+                      id="field-hide-team-leader-sign"
+                      type="checkbox"
+                      checked={report.hideTeamLeaderSign === true}
+                      onChange={(e) => onChange({ ...report, hideTeamLeaderSign: e.target.checked })}
+                      className="mt-0.5 w-4 h-4 rounded text-amber-600 focus:ring-amber-500"
+                    />
+                    <span>
+                      <span className="block text-xs font-bold text-slate-800">
+                        경미한 클레임으로 팀장 서명란 생략
+                      </span>
+                      <span className="block text-[10px] text-slate-500 mt-0.5">
+                        경미한 클레임 등 필요한 경우에만 선택하세요. 선택 시 A4 보고서에서 식품품질경영팀장 서명란이 제외됩니다.
+                      </span>
+                    </span>
+                  </label>
                 </div>
                 <div className="sm:col-span-2">
                   <label className="block text-xs font-semibold text-slate-700 mb-1">
@@ -5361,79 +5880,8 @@ export function InputFormPane({
               onLogoChange={(url) => onChange({ ...report, companyLogoUrl: url })}
             />
 
-            <div id="field-attachment-1" className="space-y-1.5 p-3.5 bg-slate-50/70 border border-slate-200 rounded-xl">
-              <div>
-                <label className="block text-[11px] font-bold text-slate-700 mb-1">
-                  [첨부 1] 첨부문서 명칭 (수정 가능):
-                </label>
-                <input
-                  type="text"
-                  value={report.attachments.attachment1Title || "[첨부 1] 현품 외관, 이물 확대 및 FT-IR 스펙트럼 그래프 사진"}
-                  onChange={(e) => updateAttachments({ attachment1Title: e.target.value })}
-                  placeholder="예: [첨부 1] 현품 외관, 이물 확대 및 FT-IR 스펙트럼 그래프 사진"
-                  className="w-full text-xs px-2.5 py-1.5 border border-slate-300 rounded-md font-semibold text-slate-800 bg-white focus:outline-none focus:ring-1 focus:ring-blue-500 mb-2"
-                />
-              </div>
-              <PhotoUploadField
-                label="증빙 사진 등록 (개별 사진 파일명/캡션 수정 가능)"
-                photos={report.attachments.attachment1Photos}
-                onChange={(photos) => updateAttachments({ attachment1Photos: photos })}
-                maxPhotos={4}
-              />
-            </div>
-
-            {/* Attachment 2: Lot History Photo (Directly manageable in Step 4) */}
-            <div id="field-attachment-2" className="space-y-1.5 p-3.5 bg-slate-50/70 border border-slate-200 rounded-xl">
-              <div>
-                <label className="block text-[11px] font-bold text-slate-700 mb-1">
-                  [첨부 2] 첨부문서 명칭 (수정 가능):
-                </label>
-                <input
-                  type="text"
-                  value={report.attachments.attachment2Title || "[첨부 2] 동일 Lot 공장 보관품 사진"}
-                  onChange={(e) => updateAttachments({ attachment2Title: e.target.value })}
-                  placeholder="예: [첨부 2] 동일 Lot 공장 보관품 사진"
-                  className="w-full text-xs px-2.5 py-1.5 border border-slate-300 rounded-md font-semibold text-slate-800 bg-white focus:outline-none focus:ring-1 focus:ring-blue-500 mb-2"
-                />
-              </div>
-              <PhotoUploadField
-                label="보관품 사진 등록 (개별 사진 파일명/캡션 수정 가능)"
-                photos={
-                  (report.attachments.attachment2Photos && report.attachments.attachment2Photos.length > 0)
-                    ? report.attachments.attachment2Photos
-                    : (report.lotHistory.retainedSamplePhotos || [])
-                }
-                onChange={(photos) => {
-                  updateAttachments({ attachment2Photos: photos });
-                }}
-                maxPhotos={4}
-              />
-              <p className="text-[11px] text-slate-500 pl-1">
-                * 등록된 사진 및 수정한 파일명/캡션은 본문 <strong>'5. 동일 Lot 이력'</strong> 및 후단 <strong>'첨부 2'</strong>에 자동 연동됩니다.
-              </p>
-            </div>
-
-            <div id="field-attachment-3" className="space-y-1.5 p-3.5 bg-slate-50/70 border border-slate-200 rounded-xl">
-              <div>
-                <label className="block text-[11px] font-bold text-slate-700 mb-1">
-                  [첨부 3] 첨부문서 명칭 (수정 가능):
-                </label>
-                <input
-                  type="text"
-                  value={report.attachments.attachment3Title || "[첨부 3] 주요 제조공정 사진 그리드 (단계별 공정명과 캡션 입력)"}
-                  onChange={(e) => updateAttachments({ attachment3Title: e.target.value })}
-                  placeholder="예: [첨부 3] 주요 제조공정 사진 그리드"
-                  className="w-full text-xs px-2.5 py-1.5 border border-slate-300 rounded-md font-semibold text-slate-800 bg-white focus:outline-none focus:ring-1 focus:ring-blue-500 mb-2"
-                />
-              </div>
-              <PhotoUploadField
-                label="공정 사진 등록 (단계별 공정명과 캡션/파일명 입력)"
-                photos={report.attachments.attachment3Photos}
-                onChange={(photos) => updateAttachments({ attachment3Photos: photos })}
-                maxPhotos={4}
-                withStepName={true}
-              />
-            </div>
+            {/* 통합 첨부파일 관리 (유일한 등록 위치: 고객 제공·보관품·일반 첨부 신규 등록, 기존 첨부 2·3 보관분 관리) */}
+            <UnifiedAttachmentManager report={report} onChange={onChange} />
           </div>
         </div>
       )}
@@ -5443,27 +5891,38 @@ export function InputFormPane({
       {/* [하단 고정 액션 바] [다음 필수 입력 →] 스마트 네비게이션 & 저장 */}
       {/* ======================================================== */}
       <div className="shrink-0 bg-white border-t border-slate-200/90 px-4 py-2.5 flex flex-wrap items-center justify-between gap-3 shadow-md z-20">
-        {/* 좌측: 이전 단계 버튼 & 현재 단계 안내 */}
+        {/* 좌측: 이전/다음 단계 버튼 & 현재 단계 안내 (입력값 유지, 차단 없음) */}
         <div className="flex items-center gap-2">
-          {currentStep !== "basic" && (
+          {currentStep !== "intake" && (
             <button
               type="button"
               id="btn-prev-workflow-step"
               onClick={handlePreviousStep}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-slate-700 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 border border-slate-300 rounded-xl transition-all cursor-pointer shadow-2xs active:scale-95"
-              title="이전 단계로 이동"
+              title="이전 단계로 이동 (입력값 유지)"
             >
               <ChevronLeft className="w-3.5 h-3.5" />
               <span>이전 단계</span>
             </button>
           )}
+          {currentStep !== "review" && (
+            <button
+              type="button"
+              id="btn-next-workflow-step"
+              onClick={handleNextStep}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-white bg-slate-700 hover:bg-slate-800 rounded-xl transition-all cursor-pointer shadow-2xs active:scale-95"
+              title="다음 단계로 이동 (입력값 유지, 미작성 있어도 이동 가능)"
+            >
+              <span>다음 단계</span>
+              <ArrowRight className="w-3.5 h-3.5" />
+            </button>
+          )}
 
-          <div className="flex items-center gap-1.5 pl-1">
+          <div className="flex items-center gap-1.5 pl-1 flex-wrap">
             <span className="text-xs font-bold text-slate-800">
-              {currentStep === "basic" && "Step 1. 기본 접수·제품"}
-              {currentStep === "investigation" && "Step 2. 정밀분석·5대조사"}
-              {currentStep === "cause" && "Step 3. 원인판정·대책"}
-              {currentStep === "conclusion" && "Step 4. 결론·첨부문서"}
+              {currentStep === "intake" && "STEP 1. 접수/현품"}
+              {currentStep === "investigate" && "STEP 2. 품질 조사"}
+              {currentStep === "review" && "STEP 3. 보고서/회신"}
             </span>
             {nextRequiredAction.stepRemainingCount > 0 ? (
               <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 border border-amber-300">
@@ -5473,6 +5932,29 @@ export function InputFormPane({
               <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300 flex items-center gap-1">
                 <Check className="w-3 h-3 stroke-[3]" />
                 <span className="hidden sm:inline">현재 단계 필수 완료</span>
+              </span>
+            )}
+            {/* 다음 필수 입력 안내 (기존 getNextRequiredAction 재사용, 이동은 기존 네비게이션 재사용) */}
+            {!nextRequiredAction.isAllCompleted ? (
+              <span className="text-[11px] text-slate-600 flex items-center gap-1.5">
+                <span>
+                  다음 입력: <strong className="text-blue-700">{nextRequiredAction.actionLabel}</strong>
+                </span>
+                <button
+                  type="button"
+                  id="btn-goto-next-required"
+                  onClick={handleNextRequiredNavigation}
+                  className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] font-bold text-blue-700 hover:text-white bg-blue-50 hover:bg-blue-600 border border-blue-300 hover:border-blue-600 rounded-lg transition-all cursor-pointer"
+                  title={`'${nextRequiredAction.actionLabel}' 입력 위치로 이동 (입력값 유지)`}
+                >
+                  <span>입력 위치로 이동</span>
+                  <ArrowRight className="w-3 h-3" />
+                </button>
+              </span>
+            ) : (
+              <span className="text-[11px] font-black text-emerald-700 flex items-center gap-1">
+                <Check className="w-3.5 h-3.5 stroke-[3]" />
+                <span>✓ 필수 입력 완료</span>
               </span>
             )}
           </div>

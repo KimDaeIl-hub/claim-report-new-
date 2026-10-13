@@ -43,6 +43,7 @@ import { PastClaimSearchModal } from "./components/PastClaimSearchModal";
 import { ProductMasterModal } from "./components/ProductMasterModal";
 import { ManufacturerMasterModal } from "./components/ManufacturerMasterModal";
 import { InvestigationPackageModal } from "./components/InvestigationPackageModal";
+import { FactoryProcessModal } from "./components/FactoryProcessModal";
 import { InvestigationPreparationView } from "./components/InvestigationPreparationView";
 import { CompleteClaimKnowledgeModal } from "./components/CompleteClaimKnowledgeModal";
 import { ClaimKnowledgeManagerModal } from "./components/ClaimKnowledgeManagerModal";
@@ -59,46 +60,62 @@ import {
   saveReportToDb,
   loadReportFromDb,
   mergePresetData,
-  DRAFT_STORAGE_KEY,
+  clearDraftFromDb,
+  isRecoverableDraft,
 } from "./utils/storage";
+import { collectSeedBundle, applySeedBundle, describeSeedApplyResult } from "./utils/seedImporter";
+import { buildAutoReportTitle } from "./utils/reportTitle";
+import { toLocalDateTimeString } from "./utils/localDate";
+import { waitForReportImages } from "./utils/printReady";
 
 type ViewMode = "preparation" | "form" | "report" | "email";
 
-export default function App() {
-  // Initialize report state from LocalStorage draft or default preset
-  const [report, setReport] = useState<ReportData>(() => {
+type SaveStatus = "saved" | "dirty" | "saving" | "error";
+
+/**
+ * 저장된 초안 문자열 정제 (레거시 명칭 치환 + 더미 사진 제거, 기존 동작 유지)
+ */
+function sanitizeDraftReport(raw: string): ReportData | null {
+  try {
+    const sanitized = raw
+      .replaceAll("대한푸드품질연구원", "광동제약")
+      .replaceAll("대한푸드㈜", "광동제약㈜")
+      .replaceAll("대한푸드", "광동제약");
+    const parsed = JSON.parse(sanitized);
+    if (!parsed || typeof parsed !== "object" || !parsed.id) return null;
     try {
-      const draft = localStorage.getItem(DRAFT_STORAGE_KEY);
-      if (draft) {
-        // Sanitize legacy name from draft as well
-        const sanitized = draft
-          .replaceAll("대한푸드품질연구원", "광동제약")
-          .replaceAll("대한푸드㈜", "광동제약㈜")
-          .replaceAll("대한푸드", "광동제약");
-        const parsed = JSON.parse(sanitized);
-        const cachedLogo = localStorage.getItem("food_qc_custom_company_logo");
-        if (cachedLogo && !parsed.companyLogoUrl) {
-          parsed.companyLogoUrl = cachedLogo;
-        }
-        // Filter out legacy dummy unsplash photos so only user-uploaded photos are kept
-        const filterUserPhotos = (list: any[]) =>
-          (list || []).filter((p: any) => p?.url && typeof p.url === "string" && !p.url.includes("unsplash.com") && !p.url.includes("placeholder"));
-        if (parsed.customerClaim) {
-          parsed.customerClaim.customerPhotos = filterUserPhotos(parsed.customerClaim.customerPhotos);
-        }
-        if (parsed.lotHistory) {
-          parsed.lotHistory.retainedSamplePhotos = filterUserPhotos(parsed.lotHistory.retainedSamplePhotos);
-        }
-        if (parsed.attachments) {
-          parsed.attachments.attachment1Photos = filterUserPhotos(parsed.attachments.attachment1Photos);
-          parsed.attachments.attachment2Photos = filterUserPhotos(parsed.attachments.attachment2Photos);
-          parsed.attachments.attachment3Photos = filterUserPhotos(parsed.attachments.attachment3Photos);
-        }
-        return parsed;
+      const cachedLogo = localStorage.getItem("food_qc_custom_company_logo");
+      if (cachedLogo && !parsed.companyLogoUrl) {
+        parsed.companyLogoUrl = cachedLogo;
       }
-    } catch (e) {
-      console.warn("Autosaved draft recovery note:", e);
+    } catch {
+      // ignore
     }
+    // Filter out legacy dummy unsplash photos so only user-uploaded photos are kept
+    const filterUserPhotos = (list: any[]) =>
+      (list || []).filter((p: any) => p?.url && typeof p.url === "string" && !p.url.includes("unsplash.com") && !p.url.includes("placeholder"));
+    if (parsed.customerClaim) {
+      parsed.customerClaim.customerPhotos = filterUserPhotos(parsed.customerClaim.customerPhotos);
+    }
+    if (parsed.lotHistory) {
+      parsed.lotHistory.retainedSamplePhotos = filterUserPhotos(parsed.lotHistory.retainedSamplePhotos);
+    }
+    if (parsed.attachments) {
+      parsed.attachments.attachment1Photos = filterUserPhotos(parsed.attachments.attachment1Photos);
+      parsed.attachments.attachment2Photos = filterUserPhotos(parsed.attachments.attachment2Photos);
+      parsed.attachments.attachment3Photos = filterUserPhotos(parsed.attachments.attachment3Photos);
+    }
+    return parsed;
+  } catch (e) {
+    console.warn("Autosaved draft recovery note:", e);
+    return null;
+  }
+}
+
+export default function App() {
+  // 초기 보고서는 빈 양식으로 시작. 저장된 초안은 마운트 후 복구 배너로 선택 복원
+  // (자동 덮어쓰기로 사용자 입력을 잃지 않도록 auto-restore하지 않음)
+  const [report, setReport] = useState<ReportData>(() => {
     const init = JSON.parse(JSON.stringify(INITIAL_REPORT_DATA));
     try {
       const cachedLogo = localStorage.getItem("food_qc_custom_company_logo");
@@ -117,6 +134,18 @@ export default function App() {
 
   const [lastSavedAt, setLastSavedAt] = useState<string>("");
   const [savedCount, setSavedCount] = useState<number>(0);
+
+  // 저장 상태 머신: saved(저장됨) / dirty(저장 대기) / saving(저장 중) / error(저장 실패)
+  // "저장됨"은 IndexedDB transaction 완료 후에만 표시됨
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>("saved");
+  const [saveErrorMsg, setSaveErrorMsg] = useState<string>("");
+  const saveRevision = useRef(0);
+  const saveTimer = useRef<number | null>(null);
+  const lastSavedSnapshot = useRef<string>("");
+
+  // 초안 복구: 저장된 초안이 있으면 사용자가 선택할 때까지 자동저장 보류
+  const [recoveryCandidate, setRecoveryCandidate] = useState<ReportData | null>(null);
+  const [recoveryChecked, setRecoveryChecked] = useState(false);
 
   // View mode: 'form' (작성 폼) vs 'report' (A4 보고서) vs 'email' (이메일 회신)
   const [viewMode, setViewMode] = useState<ViewMode>(isPrintMode ? "report" : "form");
@@ -139,6 +168,7 @@ export default function App() {
   const [isCompleteKnowledgeModalOpen, setIsCompleteKnowledgeModalOpen] = useState(false);
   const [isKnowledgeManagerOpen, setIsKnowledgeManagerOpen] = useState(false);
   const [isKnowledgeCenterOpen, setIsKnowledgeCenterOpen] = useState(false);
+  const [isFactoryProcessOpen, setIsFactoryProcessOpen] = useState(false);
   const [knowledgeCenterTab, setKnowledgeCenterTab] = useState<KnowledgeCenterTab>("products");
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -225,62 +255,184 @@ export default function App() {
   };
 
   // Auto-trigger print when opened with ?print=true outside iframe
+  // (이미지 로딩 대기 후 인쇄하여 빈 이미지 출력 방지, 실패해도 인쇄 진행)
   useEffect(() => {
     if (isPrintMode) {
+      let cancelled = false;
       const timer = setTimeout(() => {
-        window.print();
+        waitForReportImages().finally(() => {
+          if (!cancelled) window.print();
+        });
       }, 700);
-      return () => clearTimeout(timer);
+      return () => {
+        cancelled = true;
+        clearTimeout(timer);
+      };
     }
   }, [isPrintMode]);
 
-  // Keep latest report ref for autosave interval
+  // 개발용 Seed 1회 적용 (?seed=demo): ID 기준 병합, 기존 데이터 덮어쓰기 없음
+  const seedAppliedRef = useRef(false);
+  useEffect(() => {
+    if (seedAppliedRef.current) return;
+    if (new URLSearchParams(window.location.search).get("seed") !== "demo") return;
+    seedAppliedRef.current = true;
+    try {
+      const result = applySeedBundle(collectSeedBundle());
+      // 반환값 근거로 안내 (신규 0건이면 이미 등록 상태로 구분, URL 존재만으로 성공 판단 금지)
+      showToast(describeSeedApplyResult(result));
+      console.info("[seed] 적용 결과:", result);
+    } catch (e: any) {
+      // 실패 시 성공 메시지 금지, 원인 전달 (기존 데이터 변경 없음)
+      showToast(`Seed 적용 실패: ${e?.message || "알 수 없는 오류"} (기존 데이터 변경 없음)`);
+      console.warn("[seed] 적용 실패:", e);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // 초안 복구 확인: 저장된 초안에 사용자 입력이 있으면 배너로 선택 요청
+  // (자동 복원으로 현재 입력을 덮어쓰지 않음)
+  useEffect(() => {
+    let cancelled = false;
+    loadReportFromDb().then((loaded) => {
+      if (cancelled) return;
+      if (loaded && loaded.id && isRecoverableDraft(loaded, JSON.stringify(INITIAL_REPORT_DATA))) {
+        const cleaned = sanitizeDraftReport(JSON.stringify(loaded)) || loaded;
+        setRecoveryCandidate(cleaned);
+      } else {
+        setRecoveryChecked(true);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const resolveRecovery = (restore: boolean) => {
+    if (restore && recoveryCandidate) {
+      setReport(recoveryCandidate);
+      try {
+        lastSavedSnapshot.current = JSON.stringify(recoveryCandidate);
+      } catch {
+        // ignore
+      }
+      setSaveStatus("saved");
+      showToast("저장된 초안을 복구했습니다.");
+    } else {
+      // 사용자가 명시 선택한 경우에만 초안 삭제 (보관함·마스터에는 손대지 않음)
+      clearDraftFromDb();
+      showToast("새 보고서 작성을 시작합니다.");
+    }
+    setRecoveryCandidate(null);
+    setRecoveryChecked(true);
+    // 선택 직후 현재 내용이 저장본과 다르면 즉시 저장 예약
+    saveRevision.current += 1;
+    scheduleFlush(saveRevision.current);
+  };
+
+  // 최신 report 미러 (타이머·visibility 핸들러에서 클로저 stale 방지, 부작용 없는 읽기용)
   const reportRef = useRef(report);
   useEffect(() => {
     reportRef.current = report;
   }, [report]);
 
-  // Update saved count
-  useEffect(() => {
-    setSavedCount(getSavedReports().length);
-  }, [isDrawerOpen]);
-
-  // Hydrate from IndexedDB if available
-  useEffect(() => {
-    loadReportFromDb().then((loaded) => {
-      if (loaded && loaded.id) {
-        setReport((prev) => {
-          // Keep existing user photos if prev has them and loaded doesn't
-          return loaded;
-        });
+  const flushSaveRevision = async (snapshot: ReportData, rev: number) => {
+    setSaveStatus("saving");
+    const result = await saveReportToDb(snapshot);
+    // 더 최신 변경이 예약되어 있으면 이번 완료를 "저장됨"으로 표시하지 않음
+    if (rev !== saveRevision.current) {
+      setSaveStatus("dirty");
+      return;
+    }
+    if (result.ok) {
+      try {
+        lastSavedSnapshot.current = JSON.stringify(snapshot);
+      } catch {
+        // ignore
       }
-    });
-  }, []);
-
-  // Autosave every 10 seconds to IndexedDB and LocalStorage safely
-  useEffect(() => {
-    const timer = setInterval(() => {
-      if (reportRef.current) {
-        saveReportToDb(reportRef.current);
-        const now = new Date();
-        const timeStr = `${String(now.getHours()).padStart(2, "0")}:${String(
-          now.getMinutes()
-        ).padStart(2, "0")}:${String(now.getSeconds()).padStart(2, "0")}`;
-        setLastSavedAt(timeStr);
+      const now = new Date();
+      const timeStr = `${String(now.getHours()).padStart(2, "0")}:${String(
+        now.getMinutes()
+      ).padStart(2, "0")}:${String(now.getSeconds()).padStart(2, "0")}`;
+      setLastSavedAt(timeStr);
+      setSaveErrorMsg("");
+      setSaveStatus("saved");
+      if (!result.lsWritten) {
+        // IndexedDB에는 저장됐으나 localStorage 용량 제한: 사진은 안전, 안내만 제공
+        showToast("초안은 저장됐습니다. 브라우저 저장 공간이 부족하여 일부 환경에서 즉시 복구가 제한될 수 있습니다.");
       }
-    }, 10000);
+    } else {
+      // 사진을 삭제하지 않고 실패 상태로만 표시 (메모리는 그대로 유지)
+      setSaveErrorMsg(result.error || "자동 저장에 실패했습니다.");
+      setSaveStatus("error");
+    }
+  };
 
-    return () => clearInterval(timer);
-  }, []);
+  const scheduleFlush = (rev: number) => {
+    if (saveTimer.current !== null) {
+      window.clearTimeout(saveTimer.current);
+      saveTimer.current = null;
+    }
+    saveTimer.current = window.setTimeout(() => {
+      saveTimer.current = null;
+      flushSaveRevision(reportRef.current, rev);
+    }, 1200);
+  };
+
+  // 변경 기반 자동 저장: report 변경 → 저장 대기 → 1.2초 debounce → 큐 저장
+  useEffect(() => {
+    if (!recoveryChecked) return;
+    setSaveStatus("dirty");
+    const rev = (saveRevision.current += 1);
+    scheduleFlush(rev);
+    return () => {
+      if (saveTimer.current !== null) {
+        window.clearTimeout(saveTimer.current);
+        saveTimer.current = null;
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [report, recoveryChecked]);
+
+  // 탭 전환·숨김 시 대기 중인 저장 즉시 flush (모바일 백그라운드 대비)
+  useEffect(() => {
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "hidden" && recoveryChecked) {
+        if (saveTimer.current !== null) {
+          window.clearTimeout(saveTimer.current);
+          saveTimer.current = null;
+        }
+        const rev = (saveRevision.current += 1);
+        flushSaveRevision(reportRef.current, rev);
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
+  }, [recoveryChecked]);
+
+  // 수동 저장: 대기 중인 debounce를 취소하고 즉시 저장 (기존 수동 저장 기능 유지)
+  const handleManualSave = async () => {
+    if (saveTimer.current !== null) {
+      window.clearTimeout(saveTimer.current);
+      saveTimer.current = null;
+    }
+    const rev = (saveRevision.current += 1);
+    await flushSaveRevision(reportRef.current, rev);
+    if (saveRevision.current === rev) {
+      showToast("현재 클레임 데이터(조사결과 버튼 선택값 포함)가 저장되었습니다.");
+    }
+  };
 
   const handlePrint = () => {
     setViewMode("report");
-    try {
-      window.focus();
-      window.print();
-    } catch (e) {
-      console.warn("Direct window.print() failed", e);
-    }
+    waitForReportImages().finally(() => {
+      try {
+        window.focus();
+        window.print();
+      } catch (e) {
+        console.warn("Direct window.print() failed", e);
+      }
+    });
     setIsPrintModalOpen(true);
   };
 
@@ -292,9 +444,11 @@ export default function App() {
       docNumber: `광동 QM 2026 -C${String(Math.floor(Math.random() * 90) + 10)}`,
       issueDate: new Date().toISOString().split("T")[0],
       companyLogoUrl: cachedLogo,
-      title: "“신규 제품” 소비자 클레임 발생에 따른 조사 보고의 건.",
+      title: buildAutoReportTitle("비타민 음료 A", "foreign"),
       customerClaim: {
-        receivedAt: new Date().toISOString().slice(0, 16),
+        // 신규 접수일은 로컬 기준 오늘, 현품 접수일은 미접수 상태(빈 값)로 시작
+        receivedAt: toLocalDateTimeString(),
+        sampleReceivedDate: "",
         channel: "고객상담센터 (유선 접수)",
         customerName: "",
         maskCustomerName: false,
@@ -560,54 +714,42 @@ export default function App() {
             <span>신규 클레임</span>
           </button>
 
-          {/* Key Feature: 조사 패키지 자동 구성 Button */}
+          {/* Key Feature: 조사 패키지 자동 구성 Button → 조사 준비 화면 단일 진입 */}
           <button
             type="button"
             id="btn-nav-investigation-package"
             onClick={() => setViewMode("preparation")}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-black text-slate-950 bg-gradient-to-r from-amber-400 via-amber-300 to-yellow-400 hover:from-amber-300 hover:to-yellow-300 rounded-lg shadow-sm hover:shadow transition-all active:scale-95 border border-amber-300 cursor-pointer"
+            className="hidden"
             title="제품 + 제조번호 + 클레임 유형을 입력하여 조사 자료와 조사 항목을 실시간 자동 구성"
           >
-            <Zap className="w-3.5 h-3.5 fill-slate-950 text-slate-950" />
             <span>조사 패키지 자동 구성</span>
           </button>
 
-          {/* Autosave badge */}
-          <div className="hidden xl:flex items-center gap-1.5 px-2.5 py-1 bg-slate-800/80 rounded-full text-[11px] text-slate-300 border border-slate-700">
-            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+          {/* Autosave badge → 하단 작은 상태 표시로 통합 (중복 제거, hidden) */}
+          <div className="hidden">
             <span>
               {lastSavedAt ? `자동 저장됨 (${lastSavedAt})` : "10초마다 자동 임시 저장"}
             </span>
           </div>
 
-          {/* Key Feature: 조사 완료 & 지식화 Button */}
+          {/* Key Feature: 조사 완료 & 지식화 Button → form 서브헤더/보고서 화면 진입으로 통합 (헤더 중복 제거, hidden) */}
           <button
             type="button"
             id="btn-complete-claim-knowledge"
             onClick={() => setIsCompleteKnowledgeModalOpen(true)}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-black text-white bg-gradient-to-r from-emerald-600 via-teal-600 to-emerald-700 hover:from-emerald-500 hover:to-teal-500 rounded-lg shadow-sm transition-all active:scale-95 border border-emerald-400/50 cursor-pointer"
+            className="hidden"
             title="조사 완료 처리 및 향후 유사사례 검색에 활용할 수 있도록 Knowledge 데이터로 연결"
           >
-            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-200" />
             <span>클레임 완료 & 지식화</span>
           </button>
 
-          {/* Direct Manual Save Button */}
+          {/* Direct Manual Save Button → 작은 상태 표시 + 더보기로 이동, 기능 유지 (hidden) */}
           <button
             type="button"
-            onClick={() => {
-              saveReportToDb(report);
-              const now = new Date();
-              const timeStr = `${String(now.getHours()).padStart(2, "0")}:${String(
-                now.getMinutes()
-              ).padStart(2, "0")}:${String(now.getSeconds()).padStart(2, "0")}`;
-              setLastSavedAt(timeStr);
-              showToast("현재 클레임 데이터(조사결과 버튼 선택값 포함)가 저장되었습니다.");
-            }}
-            className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-500 rounded-lg shadow-xs transition-all active:scale-95 border border-emerald-500 cursor-pointer"
+            onClick={handleManualSave}
+            className="hidden"
             title="현재 작성 중인 데이터 즉시 수동 저장 (새로고침 시에도 유지됨)"
           >
-            <Save className="w-3.5 h-3.5" />
             <span>저장</span>
           </button>
 
@@ -627,15 +769,14 @@ export default function App() {
             )}
           </button>
 
-          {/* Knowledge Base Modal Trigger */}
+          {/* Knowledge Base Modal Trigger → 품질 지식센터 지식 탭으로 통합 (hidden: 직접 진입 제거) */}
           <button
             type="button"
             id="btn-nav-knowledge-base"
             onClick={() => openKnowledgeCenter("knowledge")}
-            className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold text-slate-200 hover:text-white bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 transition-colors cursor-pointer"
+            className="hidden"
             title="완료 클레임 지식 베이스(Knowledge Base) 목록 및 재사용"
           >
-            <Database className="w-3.5 h-3.5 text-amber-400" />
             <span className="hidden sm:inline">지식 베이스</span>
           </button>
 
@@ -652,65 +793,60 @@ export default function App() {
             <span className="sm:hidden">지식센터</span>
           </button>
 
-          {/* Product Master Button */}
+          {/* Product Master Button → 품질 지식센터 제품 탭으로 통합 (hidden) */}
           <button
             type="button"
             id="btn-nav-product-master"
             onClick={() => openKnowledgeCenter("products")}
-            className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold text-slate-200 hover:text-white bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 transition-colors"
+            className="hidden"
             title="제품 Master (제품명, 코드, 포장, 제조라인) 표준 관리 및 상호 연계"
           >
-            <Package className="w-3.5 h-3.5 text-blue-400" />
             <span className="hidden sm:inline">제품 Master</span>
           </button>
 
-          {/* Manufacturer & Line Master Button */}
+          {/* Manufacturer & Line Master Button → 품질 지식센터 제조처 탭으로 통합 (hidden) */}
           <button
             type="button"
             id="btn-nav-manufacturer-master"
             onClick={() => openKnowledgeCenter("manufacturers")}
-            className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold text-slate-200 hover:text-white bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 transition-colors"
+            className="hidden"
             title="제조처 및 제조라인 Master (자사 공장, OEM, 라인 규격) 표준 관리 및 상호 연계"
           >
-            <Factory className="w-3.5 h-3.5 text-indigo-400" />
             <span className="hidden sm:inline">제조처/라인 Master</span>
           </button>
 
-          {/* Preset Manager Button */}
+          {/* Preset Manager Button → 품질 지식센터 템플릿 탭으로 통합 (hidden) */}
           <button
             type="button"
             onClick={() => openKnowledgeCenter("templates")}
-            className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold text-slate-200 hover:text-white bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 transition-colors"
+            className="hidden"
             title="조사 템플릿/프리셋 관리 및 상호 연계"
           >
-            <Sparkles className="w-3.5 h-3.5 text-purple-400" />
             <span className="hidden sm:inline">프리셋</span>
           </button>
 
-          {/* Phrase Manager */}
+          {/* Phrase Manager → 품질 지식센터 상용구 탭으로 통합 (hidden) */}
           <button
             type="button"
             onClick={() => openKnowledgeCenter("phrases")}
-            className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold text-slate-200 hover:text-white bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 transition-colors"
+            className="hidden"
             title="나만의 상용구 라이브러리 관리 및 상호 연계"
           >
-            <BookOpen className="w-3.5 h-3.5 text-amber-400" />
             <span className="hidden sm:inline">상용구</span>
           </button>
 
-          {/* Direct new-tab print link */}
+          {/* Direct new-tab print link → PrintExportModal로 통합 (헤더 중복 제거, hidden) */}
           <a
             href={`/?print=true&t=${Date.now()}`}
             target="_blank"
             rel="noopener noreferrer"
-            className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-red-200 hover:text-white bg-red-950/60 hover:bg-red-900/80 rounded-lg border border-red-700/60 transition-colors shadow-xs"
+            className="hidden"
             title="새 브라우저 탭에서 깨끗하게 A4 인쇄 / PDF 저장"
           >
-            <ExternalLink className="w-3.5 h-3.5 text-red-400" />
             <span>새 창 인쇄</span>
           </a>
 
-          {/* Main Print / Save PDF Button */}
+          {/* Main Print / Save PDF Button → 보고서 단계에서 사용, 헤더에는 더보기로 유지 */}
           <button
             type="button"
             onClick={handlePrint}
@@ -720,8 +856,119 @@ export default function App() {
             <Printer className="w-4 h-4" />
             <span>인쇄 / PDF</span>
           </button>
+
+          {/* 더보기: 부가 기능 (저장/완료/지식/새창인쇄) — 기존 기능 재호출, 신규 로직 없음 */}
+          <details className="relative">
+            <summary className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold text-slate-200 hover:text-white bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 transition-colors cursor-pointer list-none">
+              <SlidersHorizontal className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">더보기</span>
+            </summary>
+            <div className="absolute right-0 mt-1 w-52 rounded-xl border border-slate-700 bg-slate-900 p-1.5 shadow-xl z-30">
+              <button
+                type="button"
+                onClick={handleManualSave}
+                className="flex w-full items-center gap-2 px-3 py-2 text-xs font-semibold text-slate-200 hover:bg-slate-700 rounded-lg"
+              >
+                <Save className="w-3.5 h-3.5" />
+                <span>지금 저장</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsCompleteKnowledgeModalOpen(true)}
+                className="flex w-full items-center gap-2 px-3 py-2 text-xs font-semibold text-slate-200 hover:bg-slate-700 rounded-lg"
+              >
+                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-300" />
+                <span>클레임 완료 & 지식화</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => openKnowledgeCenter("knowledge")}
+                className="flex w-full items-center gap-2 px-3 py-2 text-xs font-semibold text-slate-200 hover:bg-slate-700 rounded-lg"
+              >
+                <Database className="w-3.5 h-3.5 text-amber-300" />
+                <span>지식 베이스</span>
+              </button>
+              <a
+                href={`/?print=true&t=${Date.now()}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex w-full items-center gap-2 px-3 py-2 text-xs font-semibold text-slate-200 hover:bg-slate-700 rounded-lg"
+              >
+                <ExternalLink className="w-3.5 h-3.5" />
+                <span>새 창 인쇄</span>
+              </a>
+            </div>
+          </details>
+
+          {/* 저장 상태 표시 (4상태: 저장 대기 / 저장 중 / 저장됨 / 저장 실패) */}
+          {saveStatus === "error" ? (
+            <button
+              type="button"
+              onClick={handleManualSave}
+              className="hidden md:flex items-center gap-1.5 px-2 py-1 text-[11px] font-bold text-red-300 hover:text-white"
+              title={saveErrorMsg || "저장 실패 — 클릭하면 다시 저장합니다. 사진 등 입력값은 메모리에서 유지됩니다."}
+            >
+              <span className="w-1.5 h-1.5 rounded-full bg-red-400" />
+              <span>● 저장 실패 (다시 시도)</span>
+            </button>
+          ) : (
+            <div
+              className="hidden md:flex items-center gap-1.5 px-2 py-1 text-[11px] text-slate-400"
+              title={
+                saveStatus === "saving"
+                  ? "IndexedDB에 기록 중입니다. 완료 후 저장됨으로 표시됩니다."
+                  : saveStatus === "dirty"
+                  ? "변경 내용이 있어 잠시 후 자동 저장됩니다."
+                  : "IndexedDB 기록이 완료된 상태입니다."
+              }
+            >
+              <span
+                className={`w-1.5 h-1.5 rounded-full ${
+                  saveStatus === "saved"
+                    ? "bg-emerald-400"
+                    : saveStatus === "saving"
+                    ? "bg-blue-400 animate-pulse"
+                    : "bg-amber-400 animate-pulse"
+                }`}
+              />
+              <span>
+                {saveStatus === "saved" && `● 저장됨 ${lastSavedAt || "--:--:--"}`}
+                {saveStatus === "saving" && "● 저장 중…"}
+                {saveStatus === "dirty" && "● 저장 대기"}
+              </span>
+            </div>
+          )}
         </div>
       </header>
+
+      {/* 초안 복구 배너: 저장된 초안이 있으면 사용자가 선택할 때까지 유지 */}
+      {recoveryCandidate && (
+        <div className="no-print shrink-0 bg-amber-50 border-b border-amber-300 px-4 py-2.5 flex flex-wrap items-center justify-between gap-2 z-20">
+          <div className="flex items-center gap-2 text-xs text-amber-900">
+            <History className="w-4 h-4 text-amber-600 shrink-0" />
+            <span>
+              <strong>이전에 작성하던 초안이 있습니다.</strong>
+              <span className="text-amber-700"> 복구하면 고객명·제품·조사내용·사진이 그대로 이어집니다.</span>
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => resolveRecovery(false)}
+              className="px-3 py-1.5 text-xs font-semibold text-slate-600 hover:text-slate-900 bg-white hover:bg-slate-100 border border-slate-300 rounded-lg transition-colors"
+            >
+              버리고 새로 시작
+            </button>
+            <button
+              type="button"
+              onClick={() => resolveRecovery(true)}
+              className="px-3 py-1.5 text-xs font-black text-white bg-blue-600 hover:bg-blue-500 rounded-lg transition-colors"
+            >
+              초안 복구하기
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* 2. Subheader Action Banner (Visible in Form Mode to give quick 1-click jumps) */}
       {viewMode === "form" && (
@@ -746,27 +993,26 @@ export default function App() {
               <span>클레임 완료 & 지식화</span>
             </button>
 
-            {/* [⚡ 조사 패키지 자동 구성] 버튼 in subheader */}
+            {/* [⚡ 조사 패키지 자동 구성] → Preparation 화면 단일 진입 (모달 중복 호출 제거, 모달 자체는 유지) */}
             <button
               type="button"
               id="btn-subheader-investigation-package"
-              onClick={() => setIsPackageModalOpen(true)}
+              onClick={() => setViewMode("preparation")}
               className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-black text-slate-950 bg-gradient-to-r from-amber-400 via-amber-300 to-yellow-400 hover:from-amber-300 hover:to-yellow-300 border border-amber-400 rounded-lg transition-colors shadow-2xs cursor-pointer active:scale-95"
-              title="제품 + 제조번호 + 클레임 유형으로 조사 패키지 자동 구성"
+              title="제품 + 제조번호 + 클레임 유형으로 조사 패키지 자동 구성 (준비 화면에서 시작)"
             >
               <Zap className="w-3.5 h-3.5 fill-slate-950 text-slate-950" />
               <span>조사 패키지 자동 구성</span>
             </button>
 
-            {/* [이전 클레임 불러오기] 버튼 */}
+            {/* [이전 클레임 불러오기] → 품질 지식센터 과거사례 탭으로 통합 (서브헤더 중복 제거, hidden) */}
             <button
               type="button"
               id="btn-subheader-load-past-claim"
               onClick={() => setIsPastClaimModalOpen(true)}
-              className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-bold text-blue-700 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-lg transition-colors shadow-2xs cursor-pointer active:scale-95"
+              className="hidden"
               title="과거 클레임 이력 검색 및 상세 내용 조회"
             >
-              <History className="w-3.5 h-3.5 text-blue-600" />
               <span>이전 클레임 불러오기</span>
             </button>
 
@@ -804,23 +1050,22 @@ export default function App() {
               )}
             </button>
 
+            {/* 이메일/보고서 이동 → 상단 단계 내비게이션으로 통합 (서브헤더 중복 제거, hidden) */}
             <button
               type="button"
               onClick={() => setViewMode("email")}
-              className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-semibold text-blue-700 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-lg transition-colors"
+              className="hidden"
               title="이메일 회신문 보기"
             >
-              <Mail className="w-3.5 h-3.5 text-blue-600" />
               <span>이메일 회신 보기</span>
             </button>
 
             <button
               type="button"
               onClick={() => setViewMode("report")}
-              className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-semibold text-slate-800 bg-slate-100 hover:bg-slate-200 border border-slate-300 rounded-lg transition-colors"
+              className="hidden"
               title="소비자용 정식 A4 공문서 보고서 미리보기"
             >
-              <FileText className="w-3.5 h-3.5 text-slate-700" />
               <span>소비자용 A4 보고서 미리보기</span>
             </button>
           </div>
@@ -845,34 +1090,38 @@ export default function App() {
           <InputFormPane
             report={report}
             onChange={(updated) => {
+              // 변경분은 dirty → debounce → 큐 저장 엔진이 처리 (입력마다 즉시 저장하지 않음)
               setReport(updated);
-              saveReportToDb(updated);
             }}
             activeTab={formActiveTab}
             onTabChange={setFormActiveTab}
             onOpenPhraseManager={(fieldKey) => {
+              // 작성 화면 상용구 진입 → 품질 지식센터 상용구 탭 (deep-link)
+              // 적용 시맨틱 동일: phrase.fieldKey 기준 handleApplyPhrase
               setPhraseManagerField(fieldKey);
-              setMasterManagerTab("phrases");
-              setIsMasterManagerOpen(true);
+              openKnowledgeCenter("phrases");
             }}
             onOpenPresetManager={() => {
-              setMasterManagerTab("presets");
-              setIsMasterManagerOpen(true);
+              // 작성 화면 프리셋 진입 → 품질 지식센터 프리셋 탭 (deep-link)
+              openKnowledgeCenter("templates");
             }}
             onOpenProcessManager={() => {
-              setMasterManagerTab("processes");
-              setIsMasterManagerOpen(true);
+              openKnowledgeCenter("processes");
             }}
             onOpenValidation={() => setIsValidationModalOpen(true)}
-            onOpenPastClaims={() => setIsPastClaimModalOpen(true)}
+            onOpenPastClaims={() => openKnowledgeCenter("pastClaims")}
             onCopyAsNewClaim={handleCopyAsNewClaim}
             onUseAsInvestigationPackage={handleUseAsInvestigationPackage}
             onOpenProductMaster={(selectionMode) => {
+              // 작성 화면 제품 선택 → 품질 지식센터 제품 탭 (deep-link)
               setIsProductSelectionMode(!!selectionMode);
-              setIsProductMasterOpen(true);
+              openKnowledgeCenter("products");
             }}
             onOpenPackageModal={() => setIsPackageModalOpen(true)}
             onOpenCompleteKnowledge={() => setIsCompleteKnowledgeModalOpen(true)}
+            onPreviewReport={() => setViewMode("report")}
+            onComposeEmail={() => setViewMode("email")}
+            onPrintReport={handlePrint}
           />
         </div>
 
@@ -921,12 +1170,14 @@ export default function App() {
         onClose={() => setIsPrintModalOpen(false)}
         report={report}
         onDirectPrint={() => {
-          try {
-            window.focus();
-            window.print();
-          } catch (e) {
-            console.warn(e);
-          }
+          waitForReportImages().finally(() => {
+            try {
+              window.focus();
+              window.print();
+            } catch (e) {
+              console.warn(e);
+            }
+          });
         }}
       />
 
@@ -935,6 +1186,35 @@ export default function App() {
         isOpen={isCsEmailOpen}
         onClose={() => setIsCsEmailOpen(false)}
         onUpdateReport={setReport}
+      />
+
+      {/* 품질 지식센터: 단일 관리 허브 (7탭 + 클레임 유형). 전용 관리 모달보다 먼저 렌더 → 브릿지로 열리는 모달이 위에 표시됨 */}
+      <QualityKnowledgeCenterModal
+        isOpen={isKnowledgeCenterOpen}
+        onClose={() => setIsKnowledgeCenterOpen(false)}
+        initialTab={knowledgeCenterTab}
+        currentReport={report}
+        onApplyProduct={handleApplyProduct}
+        onApplyProcess={handleApplyProcess}
+        onApplyPreset={handleApplyPreset}
+        onApplyPhrase={handleApplyPhrase}
+        onCopyAsNewClaim={handleCopyAsNewClaim}
+        onUseAsInvestigationPackage={handleUseAsInvestigationPackage}
+        onOpenProductManager={() => setIsProductMasterOpen(true)}
+        onOpenManufacturerManager={() => setIsManufacturerMasterOpen(true)}
+        onOpenProcessManager={() => setIsFactoryProcessOpen(true)}
+        onOpenPresetManager={() => setIsPresetManagerOpen(true)}
+        onOpenPhraseManager={() => setIsPhraseManagerOpen(true)}
+        onOpenPastClaimSearch={() => setIsPastClaimModalOpen(true)}
+        onOpenKnowledgeManager={() => setIsKnowledgeManagerOpen(true)}
+      />
+
+      {/* 제조공정도 편집기 (지식센터 제조공정 탭 → 공정 관리 브릿지, 기존 모달·데이터 재사용) */}
+      <FactoryProcessModal
+        isOpen={isFactoryProcessOpen}
+        onClose={() => setIsFactoryProcessOpen(false)}
+        currentManufacturer={report.productInfo.manufacturer}
+        onApplyProcess={handleApplyProcess}
       />
 
       <UnifiedQualityManagerModal
@@ -1020,7 +1300,16 @@ export default function App() {
         isOpen={isDrawerOpen}
         onClose={() => setIsDrawerOpen(false)}
         currentReport={report}
-        onLoadReport={setReport}
+        onLoadReport={(loaded) =>
+          setReport({
+            ...loaded,
+            productInfo: {
+              ...loaded.productInfo,
+              // 구형 보관 데이터에 제조번호 필드가 없으면 빈 값으로 정규화 (제어 컴포넌트 경고 방지)
+              lotNumber: loaded.productInfo?.lotNumber || "",
+            },
+          })
+        }
         onNewReport={handleNewReport}
       />
 
@@ -1038,20 +1327,6 @@ export default function App() {
         isOpen={isKnowledgeManagerOpen}
         onClose={() => setIsKnowledgeManagerOpen(false)}
         onApplyAsInvestigationPackage={handleUseAsInvestigationPackage}
-      />
-
-      {/* 8대 정보 상호 연계 통합 관리: 품질 지식센터 (Quality Knowledge Center) */}
-      <QualityKnowledgeCenterModal
-        isOpen={isKnowledgeCenterOpen}
-        onClose={() => setIsKnowledgeCenterOpen(false)}
-        initialTab={knowledgeCenterTab}
-        currentReport={report}
-        onApplyProduct={handleApplyProduct}
-        onApplyProcess={handleApplyProcess}
-        onApplyPreset={handleApplyPreset}
-        onApplyPhrase={handleApplyPhrase}
-        onCopyAsNewClaim={handleCopyAsNewClaim}
-        onUseAsInvestigationPackage={handleUseAsInvestigationPackage}
       />
 
       {/* Floating toast notification */}

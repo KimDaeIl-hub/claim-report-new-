@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
   Copy,
   Check,
@@ -17,12 +17,20 @@ import {
   Sparkles,
   Info,
   ShieldAlert,
+  ExternalLink,
 } from "lucide-react";
 import { ReportData, EmailAudienceSettings } from "../types";
 import {
   formatAudienceEmails,
   DEFAULT_EMAIL_AUDIENCE_SETTINGS,
 } from "../utils/emailAudienceFormatter";
+import {
+  collectEmailPhotos,
+  buildEmailPhotosHtml,
+  buildEmailPhotosText,
+  escapeEmailHtml,
+} from "../utils/emailPhotos";
+import { toLocalDateString } from "../utils/localDate";
 import { getUnexaminedInvestigationItems } from "../utils/investigationStatus";
 
 interface EmailViewPaneProps {
@@ -49,7 +57,7 @@ export function EmailViewPane({
 
   // 설정 드로어 열림/닫힘
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [copiedType, setCopiedType] = useState<"internal_html" | "internal_text" | "consumer_html" | "consumer_text" | null>(null);
+  const [copiedType, setCopiedType] = useState<"internal_html" | "internal_text" | "consumer_html" | "consumer_text" | "internal_html_photos" | "consumer_html_photos" | "internal_html_textonly" | "consumer_html_textonly" | "internal_html_failed" | "consumer_html_failed" | "internal_text_failed" | "consumer_text_failed" | "internal_text_empty" | "consumer_text_empty" | null>(null);
 
   // 설정 업데이트 핸들러
   const handleToggleSetting = (key: keyof EmailAudienceSettings) => {
@@ -67,10 +75,77 @@ export function EmailViewPane({
   const emailResult = formatAudienceEmails(report, settings);
   const unexaminedItems = getUnexaminedInvestigationItems(report);
 
-  // 복사 핸들러 (Rich HTML)
+  // 미리보기·복사 공용 첨부 사진 (출력 대상만, 저장 순서·id 중복 제거)
+  const emailPhotos = collectEmailPhotos(report);
+  const emailPhotosHtml = buildEmailPhotosHtml(emailPhotos);
+
+  const [downloadNotice, setDownloadNotice] = useState<string | null>(null);
+
+  // 대체 UX 1 상태: 생성된 Blob URL·파일명·상태 (링크 교체·언마운트 시에만 해제)
+  const [emailHtmlUrl, setEmailHtmlUrl] = useState<string | null>(null);
+  const [emailHtmlName, setEmailHtmlName] = useState<string>("");
+  const [emailHtmlStatus, setEmailHtmlStatus] = useState<
+    { kind: "idle" } | { kind: "ready"; bytes: number; photos: number } | { kind: "error"; message: string }
+  >({ kind: "idle" });
+
+  useEffect(() => {
+    return () => {
+      if (emailHtmlUrl) {
+        try {
+          URL.revokeObjectURL(emailHtmlUrl);
+        } catch {
+          // 정리 중 오류 무시
+        }
+      }
+    };
+  }, [emailHtmlUrl]);
+
+  /**
+   * execCommand 대체 복사 (클립보드 API 실패 시 최후 수단)
+   * - 동기 boolean 반환으로 실제 성공 여부를 판정 (성공 단정 금지)
+   * - 임시 textarea는 제거하고 기존 선택 영역은 복원 시도
+   */
+  const fallbackCopyText = (text: string): boolean => {
+    if (!text) return false;
+    try {
+      const prevActive = document.activeElement as HTMLElement | null;
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "fixed";
+      ta.style.top = "0";
+      ta.style.left = "0";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      ta.setSelectionRange(0, ta.value.length);
+      const ok = document.execCommand("copy");
+      document.body.removeChild(ta);
+      if (prevActive && typeof prevActive.focus === "function") {
+        try {
+          prevActive.focus();
+        } catch {
+          // 포커스 복원 실패는 무시 (복사 결과와 무관)
+        }
+      }
+      return ok === true;
+    } catch {
+      return false;
+    }
+  };
+
+  // 복사 핸들러 (Rich HTML + 출력 대상 사진)
   const handleCopyRichHtml = async (target: "internal" | "consumer") => {
-    const htmlText = target === "internal" ? emailResult.internal.htmlText : emailResult.consumer.htmlText;
-    const plainText = target === "internal" ? emailResult.internal.plainText : emailResult.consumer.plainText;
+    const baseHtml = target === "internal" ? emailResult.internal.htmlText : emailResult.consumer.htmlText;
+    const basePlain = target === "internal" ? emailResult.internal.plainText : emailResult.consumer.plainText;
+    const photos = emailPhotos;
+    const htmlText = photos.length > 0 ? baseHtml + buildEmailPhotosHtml(photos) : baseHtml;
+    const plainText = photos.length > 0 ? basePlain + buildEmailPhotosText(photos) : basePlain;
+    if (!htmlText.trim() && !plainText.trim()) {
+      setCopiedType(`${target}_html_failed`);
+      setTimeout(() => setCopiedType(null), 2500);
+      return;
+    }
     try {
       if (navigator.clipboard && window.ClipboardItem) {
         const blobHtml = new Blob([htmlText], { type: "text/html" });
@@ -84,25 +159,124 @@ export function EmailViewPane({
       } else {
         await navigator.clipboard.writeText(plainText);
       }
-      setCopiedType(`${target}_html`);
+      setCopiedType(photos.length > 0 ? `${target}_html_photos` : `${target}_html`);
       setTimeout(() => setCopiedType(null), 2500);
     } catch (e) {
       console.error("Rich HTML copy failed", e);
-      await navigator.clipboard.writeText(plainText);
-      setCopiedType(`${target}_text`);
+      // 사진 포함 복사 실패 시 기존 본문 텍스트만 재시도 (사진 제외를 명시)
+      let textOk = false;
+      try {
+        await navigator.clipboard.writeText(basePlain);
+        textOk = true;
+      } catch {
+        textOk = fallbackCopyText(basePlain);
+      }
+      setCopiedType(textOk ? `${target}_html_textonly` : `${target}_html_failed`);
       setTimeout(() => setCopiedType(null), 2500);
     }
   };
 
-  // 복사 핸들러 (Plain Text)
+  // 복사 핸들러 (Plain Text, 이미지 경로와 완전 독립)
   const handleCopyPlainText = async (target: "internal" | "consumer") => {
     const plainText = target === "internal" ? emailResult.internal.plainText : emailResult.consumer.plainText;
+    if (!plainText.trim()) {
+      setCopiedType(`${target}_text_empty`);
+      setTimeout(() => setCopiedType(null), 2500);
+      return;
+    }
     try {
       await navigator.clipboard.writeText(plainText);
       setCopiedType(`${target}_text`);
       setTimeout(() => setCopiedType(null), 2500);
     } catch (e) {
       console.error("Text copy error", e);
+      if (fallbackCopyText(plainText)) {
+        setCopiedType(`${target}_text`);
+      } else {
+        setCopiedType(`${target}_text_failed`);
+      }
+      setTimeout(() => setCopiedType(null), 2500);
+    }
+  };
+
+  // 대체 UX 1: 서식+사진 HTML 파일 저장 (클립보드가 막힌 환경용, 기존 복사 버튼과 별개)
+  const buildEmailHtmlDoc = (target: "internal" | "consumer"): { subject: string; doc: string; htmlLen: number } => {
+    const subject =
+      target === "internal" ? emailResult.internal.subject : emailResult.consumer.subject;
+    const safeTitle = escapeEmailHtml(subject);
+    const htmlText =
+      (target === "internal" ? emailResult.internal.htmlText : emailResult.consumer.htmlText) +
+      emailPhotosHtml;
+    // 저장 문서는 제목+본문만 포함 (앱 UI·버튼 없음 → 전체 선택 복사 시 불필요 요소 미포함)
+    const doc =
+      `<!doctype html><html lang="ko"><head><meta charset="UTF-8" />` +
+      `<title>${safeTitle}</title></head>` +
+      `<body style="font-family:'Malgun Gothic',sans-serif;max-width:760px;margin:0 auto;padding:24px;">` +
+      `<h2>${safeTitle}</h2><div id="mail-body">${htmlText}</div></body></html>`;
+    return { subject, doc, htmlLen: htmlText.length };
+  };
+
+  const flashDownloadNotice = (msg: string) => {
+    setDownloadNotice(msg);
+    setTimeout(() => setDownloadNotice(null), 5000);
+  };
+
+  const handleDownloadEmailHtml = (target: "internal" | "consumer") => {
+    flashDownloadNotice("HTML 생성 중...");
+    try {
+      const { doc, htmlLen } = buildEmailHtmlDoc(target);
+      if (!doc || htmlLen < 100) {
+        flashDownloadNotice("HTML 생성에 실패했습니다. 본문이 비어 있는지 확인해 주세요.");
+        return;
+      }
+      // 기존 링크가 있으면 교체 전에 해제 (즉시 해제 금지 — 링크 유효 기간 보장)
+      if (emailHtmlUrl) {
+        try {
+          URL.revokeObjectURL(emailHtmlUrl);
+        } catch {
+          // 해제 실패 무시
+        }
+      }
+      const blob = new Blob([doc], { type: "text/html;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const day = toLocalDateString().replace(/-/g, "");
+      setEmailHtmlUrl(url);
+      setEmailHtmlName(`클레임회신_${day}.html`);
+      setEmailHtmlStatus({
+        kind: "ready",
+        bytes: blob.size,
+        photos: emailPhotos.length,
+      });
+      // 생성 완료 + 링크 노출 (저장 완료 아님 — 실제 저장은 링크 클릭 후 브라우저가 수행)
+      flashDownloadNotice(
+        `HTML 생성됨 (${emailPhotos.length}장 포함). 아래 '사진 포함 이메일 HTML 파일 저장' 링크를 눌러 저장하세요.`
+      );
+    } catch (e) {
+      console.error("Email HTML download failed", e);
+      flashDownloadNotice("HTML 파일 저장에 실패했습니다. '새 탭에서 열기'를 이용하세요.");
+    }
+  };
+
+  // 대체 UX 2: 새 탭에서 열기 (다운로드 속성 차단 환경용, 같은 HTML 문서 재사용)
+  const handleOpenEmailHtmlTab = (target: "internal" | "consumer") => {
+    try {
+      const { doc, htmlLen } = buildEmailHtmlDoc(target);
+      if (!doc || htmlLen < 100) {
+        flashDownloadNotice("HTML 생성에 실패했습니다. 본문이 비어 있는지 확인해 주세요.");
+        return;
+      }
+      const blob = new Blob([doc], { type: "text/html;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const win = window.open(url, "_blank", "noopener");
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+      if (!win) {
+        flashDownloadNotice("새 탭이 차단되었습니다. 팝업을 허용한 뒤 다시 시도하세요.");
+        return;
+      }
+      flashDownloadNotice("새 탭에서 열었습니다. 본문 영역을 드래그 선택 후 복사하세요.");
+    } catch (e) {
+      console.error("Email HTML new-tab failed", e);
+      flashDownloadNotice("새 탭 열기에 실패했습니다.");
     }
   };
 
@@ -482,39 +656,102 @@ export function EmailViewPane({
             <>
               <button
                 type="button"
-                onClick={() => handleCopyPlainText(viewMode as "internal" | "consumer")}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors"
+                onClick={() => handleCopyRichHtml(viewMode as "internal" | "consumer")}
+                className="inline-flex items-center gap-1.5 px-4 py-1.5 text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-lg shadow-xs transition-colors active:scale-95"
               >
-                {copiedType === `${viewMode}_text` ? (
+                {copiedType === `${viewMode}_html_photos` ? (
                   <>
-                    <Check className="w-4 h-4 text-emerald-600" />
-                    <span className="text-emerald-700 font-bold">텍스트 복사됨</span>
+                    <Check className="w-4 h-4 text-white" />
+                    <span>사진 포함 메일을 복사했습니다.</span>
+                  </>
+                ) : copiedType === `${viewMode}_html` ? (
+                  <>
+                    <Check className="w-4 h-4 text-white" />
+                    <span>서식 포함 메일을 복사했습니다.</span>
+                  </>
+                ) : copiedType === `${viewMode}_html_textonly` ? (
+                  <>
+                    <Check className="w-4 h-4 text-white" />
+                    <span>메일 본문만 복사했습니다. 사진은 포함되지 않았습니다.</span>
+                  </>
+                ) : copiedType === `${viewMode}_html_failed` ? (
+                  <>
+                    <AlertTriangle className="w-4 h-4 text-white" />
+                    <span>복사에 실패했습니다. 다시 시도하거나 HTML 파일 저장을 이용해 주세요.</span>
                   </>
                 ) : (
                   <>
-                    <Copy className="w-4 h-4 text-slate-500" />
-                    <span>일반 텍스트 복사</span>
+                    <Share2 className="w-4 h-4 text-white" />
+                    <span>사진 포함 메일 복사</span>
                   </>
                 )}
               </button>
 
               <button
                 type="button"
-                onClick={() => handleCopyRichHtml(viewMode as "internal" | "consumer")}
-                className="inline-flex items-center gap-1.5 px-4 py-1.5 text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-lg shadow-xs transition-colors active:scale-95"
+                onClick={() => handleCopyPlainText(viewMode as "internal" | "consumer")}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors"
               >
-                {copiedType === `${viewMode}_html` ? (
+                {copiedType === `${viewMode}_text` ? (
                   <>
-                    <Check className="w-4 h-4 text-white" />
-                    <span>서식 복사 완료!</span>
+                    <Check className="w-4 h-4 text-emerald-600" />
+                    <span className="text-emerald-700 font-bold">메일 본문을 복사했습니다.</span>
+                  </>
+                ) : copiedType === `${viewMode}_text_failed` ? (
+                  <>
+                    <AlertTriangle className="w-4 h-4 text-red-600" />
+                    <span className="text-red-700 font-bold">복사에 실패했습니다. 다시 시도하거나 HTML 파일 저장을 이용해 주세요.</span>
+                  </>
+                ) : copiedType === `${viewMode}_text_empty` ? (
+                  <>
+                    <AlertTriangle className="w-4 h-4 text-amber-600" />
+                    <span className="text-amber-700 font-bold">복사할 본문이 없습니다.</span>
                   </>
                 ) : (
                   <>
-                    <Share2 className="w-4 h-4 text-white" />
-                    <span>그룹웨어 메일 복사 (서식 포함)</span>
+                    <Copy className="w-4 h-4 text-slate-500" />
+                    <span>메일 본문 복사</span>
                   </>
                 )}
               </button>
+
+              <button
+                type="button"
+                onClick={() => handleDownloadEmailHtml(viewMode as "internal" | "consumer")}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors"
+                title="서식·사진이 포함된 HTML 파일을 생성합니다. 생성 후 아래 링크를 눌러 저장하세요."
+              >
+                <FileText className="w-4 h-4 text-slate-500" />
+                <span>HTML 파일 생성</span>
+              </button>
+              {emailHtmlUrl && emailHtmlStatus.kind === "ready" && (
+                <a
+                  href={emailHtmlUrl}
+                  download={emailHtmlName}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg shadow-xs transition-colors"
+                  title="클릭하면 HTML 파일이 저장됩니다. 저장 후 브라우저에서 열어 본문 영역만 선택·복사하세요."
+                >
+                  <FileText className="w-4 h-4 text-white" />
+                  <span>사진 포함 이메일 HTML 파일 저장 ({emailHtmlStatus.photos}장)</span>
+                </a>
+              )}
+              <button
+                type="button"
+                onClick={() => handleOpenEmailHtmlTab(viewMode as "internal" | "consumer")}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors"
+                title="같은 HTML 문서를 새 탭에서 엽니다. 다운로드가 막힌 환경용 대체 수단입니다."
+              >
+                <ExternalLink className="w-4 h-4 text-slate-500" />
+                <span>새 탭에서 열기</span>
+              </button>
+              {downloadNotice && (
+                <span className="text-[11px] font-semibold text-blue-700 bg-blue-50 px-2 py-1 rounded border border-blue-200">
+                  {downloadNotice}
+                </span>
+              )}
+              <span className="text-[11px] text-slate-500">
+                저장한 HTML을 브라우저로 열어 본문 영역만 선택·복사하면 서식·사진이 유지됩니다.
+              </span>
             </>
           ) : (
             <span className="text-xs text-slate-500 font-medium">
@@ -523,6 +760,7 @@ export function EmailViewPane({
           )}
         </div>
       </div>
+
 
       {/* Main Content Area */}
       {viewMode === "compare" ? (
@@ -551,7 +789,7 @@ export function EmailViewPane({
             </div>
             <div
               className="p-5 text-xs leading-relaxed overflow-y-auto max-h-[700px] border-b border-slate-100"
-              dangerouslySetInnerHTML={{ __html: emailResult.internal.htmlText }}
+              dangerouslySetInnerHTML={{ __html: emailResult.internal.htmlText + emailPhotosHtml }}
             />
           </div>
 
@@ -576,7 +814,7 @@ export function EmailViewPane({
             </div>
             <div
               className="p-5 text-xs leading-relaxed overflow-y-auto max-h-[700px] border-b border-slate-100"
-              dangerouslySetInnerHTML={{ __html: emailResult.consumer.htmlText }}
+              dangerouslySetInnerHTML={{ __html: emailResult.consumer.htmlText + emailPhotosHtml }}
             />
           </div>
         </div>
@@ -624,7 +862,7 @@ export function EmailViewPane({
             <div
               className="border border-slate-200 rounded-xl overflow-hidden bg-white shadow-2xs"
               dangerouslySetInnerHTML={{
-                __html: viewMode === "internal" ? emailResult.internal.htmlText : emailResult.consumer.htmlText,
+                __html: (viewMode === "internal" ? emailResult.internal.htmlText : emailResult.consumer.htmlText) + emailPhotosHtml,
               }}
             />
           </div>

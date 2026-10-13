@@ -99,6 +99,7 @@ export function TestPrincipleBox({
               <PhraseDropdown
                 fieldKey={fieldKey}
                 activePresetId={activePresetId}
+                currentValue={principleText}
                 onSelectPhrase={(content) => onChange(true, content)}
                 onOpenManager={onOpenManager}
                 buttonLabel="표준 원리 선택"

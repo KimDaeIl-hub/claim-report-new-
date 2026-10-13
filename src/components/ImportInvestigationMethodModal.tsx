@@ -56,7 +56,7 @@ export function ImportInvestigationMethodModal({
             </div>
             <div>
               <span className="text-xs font-bold text-blue-300 bg-blue-950/60 border border-blue-400/30 px-2 py-0.5 rounded-full inline-block">
-                조사방법 안전 가져오기
+                과거 사례에서 가져오기
               </span>
               <h3 className="text-sm sm:text-base font-bold text-white mt-1">
                 과거 유사 사례의 조사방법 및 항목 구성 적용

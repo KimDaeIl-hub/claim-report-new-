@@ -1,5 +1,6 @@
 import { ReportData, EmailAudienceSettings } from "../types";
 import { maskCustomerName } from "./masking";
+import { stripInternalPrefix } from "./displayName";
 import { getSafeInvestigationText, resolveItemStatus } from "./investigationStatus";
 
 export const DEFAULT_EMAIL_AUDIENCE_SETTINGS: EmailAudienceSettings = {
@@ -147,7 +148,7 @@ export function formatAudienceEmails(
 
   const {
     customerClaim,
-    productInfo,
+    productInfo: rawProductInfo,
     analysisResults,
     manufacturingProcess,
     lotHistory,
@@ -156,6 +157,15 @@ export function formatAudienceEmails(
     companyName = "광동제약주식회사",
     companyTel = "전화(031)8093-1813",
   } = report;
+
+  // 공식 문서 표시용: 내부 분류 접두사([실제]/[범용]/[DEMO])만 제거
+  // (원본 저장값·사용자 입력 본문은 변경하지 않음)
+  const productInfo = {
+    ...rawProductInfo,
+    productName: stripInternalPrefix(rawProductInfo.productName),
+    manufacturer: stripInternalPrefix(rawProductInfo.manufacturer),
+    manufactureLine: stripInternalPrefix(rawProductInfo.manufactureLine),
+  };
 
   const researcher = cleanResearcherName(report.researcherName);
   const displayName = maskCustomerName(

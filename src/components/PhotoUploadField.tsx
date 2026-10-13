@@ -10,8 +10,8 @@ interface PhotoUploadFieldProps {
   withStepName?: boolean;
 }
 
-// Compress client-side images to maintain crisp A4 print quality while avoiding localStorage quota limits
-function compressImageFile(file: File): Promise<string> {
+// 클라이언트 측 압축 (A4 인쇄 품질 유지 + 저장 용량 관리, 통합 첨부 관리에서 재사용)
+export function compressImageFile(file: File): Promise<string> {
   return new Promise((resolve) => {
     const reader = new FileReader();
     reader.onload = (e) => {
@@ -119,6 +119,32 @@ export function PhotoUploadField({
     onChange(currentPhotos.map((p) => (p.id === id ? { ...p, stepName } : p)));
   };
 
+  const handleCategoryChange = (id: string, category: string) => {
+    onChange(currentPhotos.map((p) => (p.id === id ? { ...p, category } : p)));
+  };
+
+  const handleSizeChange = (id: string, displaySize: PhotoAttachment["displaySize"]) => {
+    onChange(currentPhotos.map((p) => (p.id === id ? { ...p, displaySize } : p)));
+  };
+
+  const handleVisibilityToggle = (id: string) => {
+    onChange(
+      currentPhotos.map((p) =>
+        p.id === id ? { ...p, showInReport: (p.showInReport ?? true) ? false : true } : p
+      )
+    );
+  };
+
+  const handleMove = (id: string, direction: -1 | 1) => {
+    const idx = currentPhotos.findIndex((p) => p.id === id);
+    const target = idx + direction;
+    if (idx < 0 || target < 0 || target >= currentPhotos.length) return;
+    const reordered = [...currentPhotos];
+    const [moved] = reordered.splice(idx, 1);
+    reordered.splice(target, 0, moved);
+    onChange(reordered);
+  };
+
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between">
@@ -201,6 +227,79 @@ export function PhotoUploadField({
               </div>
 
               <div className="p-2 space-y-1.5 flex-1 flex flex-col justify-between bg-white">
+                {(photo.showInReport ?? true) === false && (
+                  <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-slate-200 text-slate-600 border border-slate-300 w-fit">
+                    출력 제외 (관리 목록에만 보관)
+                  </span>
+                )}
+                <div className="space-y-0.5">
+                  <label className="text-[10px] font-semibold text-slate-600">
+                    분류명 (자유 입력):
+                  </label>
+                  <input
+                    type="text"
+                    value={photo.category || ""}
+                    onChange={(e) => handleCategoryChange(photo.id, e.target.value)}
+                    placeholder="예: 소비자 제공 현품 (미입력 시 미분류)"
+                    className="w-full text-xs font-medium px-2 py-1 border border-slate-300 rounded text-slate-800 bg-white hover:border-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-1.5">
+                  <div className="space-y-0.5">
+                    <label className="text-[10px] font-semibold text-slate-600">
+                      표시 크기:
+                    </label>
+                    <select
+                      value={photo.displaySize || "M"}
+                      onChange={(e) =>
+                        handleSizeChange(photo.id, e.target.value as PhotoAttachment["displaySize"])
+                      }
+                      className="w-full text-xs font-medium px-1.5 py-1 border border-slate-300 rounded text-slate-800 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    >
+                      <option value="S">작게 (S)</option>
+                      <option value="M">보통 (M)</option>
+                      <option value="L">크게 (L)</option>
+                      <option value="XL">전체 폭 (XL)</option>
+                    </select>
+                  </div>
+                  <div className="space-y-0.5">
+                    <span className="text-[10px] font-semibold text-slate-600 block">
+                      순서·출력:
+                    </span>
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => handleMove(photo.id, -1)}
+                        disabled={index === 0}
+                        className="px-1.5 py-1 text-[11px] font-bold text-slate-600 bg-slate-100 hover:bg-slate-200 border border-slate-300 rounded disabled:opacity-40"
+                        title="앞으로 이동"
+                      >
+                        ↑
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleMove(photo.id, 1)}
+                        disabled={index === currentPhotos.length - 1}
+                        className="px-1.5 py-1 text-[11px] font-bold text-slate-600 bg-slate-100 hover:bg-slate-200 border border-slate-300 rounded disabled:opacity-40"
+                        title="뒤로 이동"
+                      >
+                        ↓
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleVisibilityToggle(photo.id)}
+                        className={`flex-1 px-1.5 py-1 text-[10px] font-bold rounded border transition-colors ${
+                          (photo.showInReport ?? true)
+                            ? "text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border-emerald-300"
+                            : "text-slate-500 bg-slate-100 hover:bg-slate-200 border-slate-300"
+                        }`}
+                        title={(photo.showInReport ?? true) ? "보고서 출력에서 제외" : "보고서 출력에 포함"}
+                      >
+                        {(photo.showInReport ?? true) ? "출력" : "제외"}
+                      </button>
+                    </div>
+                  </div>
+                </div>
                 {withStepName && (
                   <div className="space-y-0.5">
                     <label className="text-[10px] font-semibold text-blue-800 flex items-center gap-1">

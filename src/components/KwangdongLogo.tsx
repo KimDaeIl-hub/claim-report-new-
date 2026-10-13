@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useState } from "react";
 
 interface KwangdongLogoProps {
   className?: string;
@@ -7,17 +7,27 @@ interface KwangdongLogoProps {
   logoUrl?: string;
 }
 
+/** A4 보고서 기본 CI (public/ci-logo.png, 사용자 업로드가 없을 때 사용) */
+export const DEFAULT_COMPANY_LOGO_URL = "/ci-logo.png";
+
 export function KwangdongLogo({
   className = "h-8",
   size = "md",
   showWordmark = true,
   logoUrl,
 }: KwangdongLogoProps) {
-  if (logoUrl && logoUrl.trim().length > 0) {
+  const [imgFailed, setImgFailed] = useState(false);
+
+  // 사용자 업로드 > 기본 CI 파일 > 내장 SVG 순으로 표시
+  const resolvedUrl =
+    logoUrl && logoUrl.trim().length > 0 ? logoUrl.trim() : DEFAULT_COMPANY_LOGO_URL;
+
+  if (!imgFailed) {
     return (
       <img
-        src={logoUrl}
+        src={resolvedUrl}
         alt="광동제약 CI"
+        onError={() => setImgFailed(true)}
         className={`object-contain shrink-0 select-none ${className}`}
       />
     );

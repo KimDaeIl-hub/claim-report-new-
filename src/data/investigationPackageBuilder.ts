@@ -2,12 +2,16 @@ import {
   InvestigationPackage,
   InvestigationPackageInput,
   InvestigationPackageItem,
+  ClaimPreset,
   ReportData,
 } from "../types";
 import { loadAllProducts, findProductById, findProductByName } from "./productMaster";
+import { getAllPresets } from "./presets";
 import { loadAllFactoryPresets, findFactoryPresetByName } from "./factoryProcessPresets";
 import { getProcessStepsByPreset, loadAllProcessSteps } from "./processStepMaster";
-import { CLAIM_TYPES, ClaimTypeCategory } from "../utils/claimTypeConfig";
+import { CLAIM_TYPES, ClaimTypeCategory, mapPresetSubCategoryToClaimType } from "../utils/claimTypeConfig";
+import { toLocalDateString } from "../utils/localDate";
+import { buildAutoReportTitle, isAutoReportTitle } from "../utils/reportTitle";
 import { DEFAULT_STANDARD_PHRASES } from "./standardPhrases";
 import {
   getRecommendedSimilarClaims,
@@ -25,6 +29,53 @@ export function normalizeClaimTypeCategory(rawType: string): ClaimTypeCategory {
   if (lower.includes("라벨") || lower.includes("표시") || lower.includes("날인") || lower === "label") return "label";
   if (lower.includes("내용량") || lower.includes("중량") || lower.includes("수량") || lower === "volume") return "volume";
   return "foreign"; // default fallback
+}
+
+/**
+ * 클레임 유형에 맞는 조사 프리셋 추천 (UI 표시용, 데이터 변경 없음)
+ * - preset.subCategory → 클레임 유형 역매핑이 일치하는 프리셋 우선, 부족분은 기타 프리셋으로 보충
+ * - 기존 PresetSelectorBar/PresetManagerModal과 동일한 저장소(getAllPresets)를 바라봄
+ */
+export function getRecommendedPresetsForClaim(
+  category: string,
+  limit = 2
+): ClaimPreset[] {
+  const categoryKey = normalizeClaimTypeCategory(category);
+  const all = getAllPresets();
+  const matched = all.filter(
+    (p) => mapPresetSubCategoryToClaimType(p.subCategory) === categoryKey
+  );
+  const rest = all.filter(
+    (p) => mapPresetSubCategoryToClaimType(p.subCategory) !== categoryKey
+  );
+  return [...matched, ...rest].slice(0, limit);
+}
+
+/**
+ * 자동 구성 가능 여부 (UI 게이트용, 순수 함수)
+ * - assemble에 실제로 필요한 최소 조건: 제품명 + 제조번호 (+ 클레임 유형은 기본값 이물로 폴백됨)
+ */
+export function getPackageInputCompleteness(input: {
+  productName?: string;
+  lotNumber?: string;
+}): { ready: boolean; missing: string[] } {
+  const missing: string[] = [];
+  if (!input.productName || !input.productName.trim()) missing.push("제품");
+  if (!input.lotNumber || !input.lotNumber.trim()) missing.push("제조번호");
+  return { ready: missing.length === 0, missing };
+}
+
+/**
+ * 조사 조건 서명 (제품·제조번호·클레임유형 변경 감지용, 순수 함수)
+ * - 서명이 달라지면 기존 패키지가 현재 조건과 맞지 않을 수 있어 재구성 안내에 사용
+ */
+export function getInvestigationConditionKey(
+  productName?: string | null,
+  lotNumber?: string | null,
+  claimType?: string | null
+): string {
+  const norm = (s: string | null | undefined) => (s || "").trim().toLowerCase();
+  return [norm(productName), norm(lotNumber), norm(claimType)].join("|");
 }
 
 /**
@@ -51,15 +102,15 @@ export function assembleInvestigationPackage(input: InvestigationPackageInput): 
     matchedProduct = allProducts.find((p) => p.productName.toLowerCase().includes(q) || q.includes(p.productName.toLowerCase())) || null;
   }
 
-  // 제품 기본 정보 확정 (미등록 신규 제품인 경우에도 입력값 기반으로 안전하게 초기화)
+  // 제품 기본 정보 확정 (미등록 직접 입력 제품은 제조처·라인을 임의 연결하지 않고 빈 값 유지)
   const productMaster = {
     productName: matchedProduct ? matchedProduct.productName : input.productName || "비타민 음료 A",
     subProductType: matchedProduct ? matchedProduct.subProductType || matchedProduct.productType : "혼합음료",
     packageType: matchedProduct ? matchedProduct.packageType : "유리병",
     containerType: matchedProduct ? matchedProduct.containerType : "갈색 유리병 100ml",
     volume: matchedProduct ? matchedProduct.volume : "100ml",
-    manufacturer: matchedProduct ? matchedProduct.manufacturer : "광동제약 평택공장",
-    manufactureLine: matchedProduct ? matchedProduct.manufactureLine : "A Line",
+    manufacturer: matchedProduct ? matchedProduct.manufacturer : "",
+    manufactureLine: matchedProduct ? matchedProduct.manufactureLine : "",
     productCode: matchedProduct?.productCode,
   };
 
@@ -364,9 +415,19 @@ export function applyInvestigationPackageToReport(
 ): ReportData {
   const next: ReportData = JSON.parse(JSON.stringify(prevReport));
 
-  // 1. [제품 정보 반영]
+  // 1. [제품 정보 반영] (직접 입력 시 productId 미부여·기존 ID 잔류 제거, 제조처 미확인 시 기존값 유지)
+  // 제목: 자동 상태(비어 있거나 기존 정보 기준 자동 제목과 일치)일 때만 새 정보로 재생성, 직접 수정 제목은 보존
+  const prevAutoTitle = buildAutoReportTitle(
+    prevReport.productInfo?.productName,
+    prevReport.productInfo?.claimTypeId
+  );
+  const nextAutoTitle = buildAutoReportTitle(
+    pkg.productMaster.productName,
+    pkg.claimTypeMaster.claimTypeId
+  );
   next.productInfo = {
     ...next.productInfo,
+    productId: pkg.input.productId,
     productName: pkg.productMaster.productName,
     subProductType: pkg.productMaster.subProductType,
     packageType: pkg.productMaster.packageType,
@@ -375,18 +436,25 @@ export function applyInvestigationPackageToReport(
     productCode: pkg.productMaster.productCode,
     manufacturer: pkg.productMaster.manufacturer,
     manufactureLine: pkg.productMaster.manufactureLine,
-    manufacturerType: pkg.productMaster.manufacturer.includes("광동") ? "internal" : "oem",
+    manufacturerType: pkg.productMaster.manufacturer
+      ? pkg.productMaster.manufacturer.includes("광동")
+        ? "internal"
+        : "oem"
+      : next.productInfo.manufacturerType,
     lotNumber: pkg.input.lotNumber || next.productInfo.lotNumber,
     factoryId: pkg.processMaster.presetId || next.productInfo.factoryId,
     claimTypeId: pkg.claimTypeMaster.claimTypeId,
   };
+  if (!prevReport.title || !prevReport.title.trim() || prevReport.title === prevAutoTitle) {
+    next.title = nextAutoTitle;
+  }
 
   // 2. [고객 접수 및 소비자 주장 반영]
   next.customerClaim = {
     ...next.customerClaim,
     claimDetails: pkg.input.customerClaim || next.customerClaim.claimDetails,
     sampleReceivedDate: pkg.input.hasSample
-      ? next.customerClaim.sampleReceivedDate || new Date().toISOString().split("T")[0]
+      ? next.customerClaim.sampleReceivedDate || toLocalDateString()
       : undefined,
   };
 

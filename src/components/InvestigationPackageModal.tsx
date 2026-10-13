@@ -17,6 +17,8 @@ import {
   HelpCircle,
   Edit2,
   Check,
+  BookOpen,
+  History,
 } from "lucide-react";
 import {
   InvestigationPackage,
@@ -26,9 +28,11 @@ import {
   ReportData,
 } from "../types";
 import { loadAllProducts } from "../data/productMaster";
+import { stripInternalPrefix } from "../utils/displayName";
 import {
   assembleInvestigationPackage,
   normalizeClaimTypeCategory,
+  getRecommendedPresetsForClaim,
 } from "../data/investigationPackageBuilder";
 import { CLAIM_TYPES, ClaimTypeCategory } from "../utils/claimTypeConfig";
 import { SimilarClaimRecommendationCard } from "./SimilarClaimRecommendationCard";
@@ -55,7 +59,7 @@ export function InvestigationPackageModal({
   // Form Inputs
   const [selectedProductId, setSelectedProductId] = useState<string>("");
   const [productNameInput, setProductNameInput] = useState<string>(initialProduct || "비타민 음료 A");
-  const [lotNumberInput, setLotNumberInput] = useState<string>(initialLotNumber || "2026.04.15 / LOT A1204");
+  const [lotNumberInput, setLotNumberInput] = useState<string>(initialLotNumber || "");
   const [claimTypeCategory, setClaimTypeCategory] = useState<ClaimTypeCategory>("foreign");
   const [claimSubCategoryInput, setClaimSubCategoryInput] = useState<string>("검은색 이물");
   const [customerClaimInput, setCustomerClaimInput] = useState<string>(
@@ -69,6 +73,12 @@ export function InvestigationPackageModal({
 
   // Auto-Assembled Package State
   const [assembledPackage, setAssembledPackage] = useState<InvestigationPackage | null>(null);
+
+  // 클레임 유형 맞춤 추천 프리셋 (동일 저장소, UI 표시용)
+  const recommendedPresets = useMemo(
+    () => getRecommendedPresetsForClaim(claimTypeCategory, 2),
+    [claimTypeCategory]
+  );
 
   // Editing single item inside package
   const [editingItemId, setEditingItemId] = useState<string | null>(null);
@@ -310,6 +320,8 @@ export function InvestigationPackageModal({
                   </div>
                   {products
                     .filter((p) => {
+                      // 업무용만: 비활성(단종 등) 및 [DEMO] 예시 제품 제외
+                      if (p.isActive === false || p.productName.startsWith("[DEMO]")) return false;
                       if (!productSearchQuery) return true;
                       const q = productSearchQuery.toLowerCase();
                       return (
@@ -325,9 +337,9 @@ export function InvestigationPackageModal({
                         className="p-2.5 hover:bg-blue-50 cursor-pointer flex items-center justify-between text-xs transition-colors"
                       >
                         <div>
-                          <strong className="text-slate-900 block font-bold">{prod.productName}</strong>
+                          <strong className="text-slate-900 block font-bold">{stripInternalPrefix(prod.productName)}</strong>
                           <span className="text-[10px] text-slate-500">
-                            {prod.manufacturer} · {prod.manufactureLine} ({prod.packageType})
+                            {stripInternalPrefix(prod.manufacturer)} · {stripInternalPrefix(prod.manufactureLine)} ({prod.packageType})
                           </span>
                         </div>
                         <span className="text-[10px] font-mono text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded border border-blue-200">
@@ -349,7 +361,7 @@ export function InvestigationPackageModal({
                 type="text"
                 value={lotNumberInput}
                 onChange={(e) => setLotNumberInput(e.target.value)}
-                placeholder="예: 2026.04.15 / LOT A1204"
+                placeholder="제조번호를 입력하세요"
                 className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl text-xs font-semibold focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
               />
             </div>
@@ -513,8 +525,8 @@ export function InvestigationPackageModal({
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                     <div className="bg-white p-2 rounded-lg border border-slate-200">
                       <span className="text-[10px] text-slate-400 block font-medium">제품</span>
-                      <strong className="text-slate-900 block truncate" title={assembledPackage.productMaster.productName}>
-                        {assembledPackage.productMaster.productName}
+                      <strong className="text-slate-900 block truncate" title={stripInternalPrefix(assembledPackage.productMaster.productName)}>
+                        {stripInternalPrefix(assembledPackage.productMaster.productName)}
                       </strong>
                       <span className="text-[9.5px] text-slate-500">
                         {assembledPackage.productMaster.packageType} ({assembledPackage.productMaster.volume || "100ml"})
@@ -782,8 +794,81 @@ export function InvestigationPackageModal({
                   )}
                 </div>
 
+                {/* 4-1. 추천 프리셋 (과거에 사용한 조사 구조) */}
+                <div className="bg-purple-50/60 border border-purple-200 rounded-xl p-3.5 space-y-2 text-xs">
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-purple-950 flex items-center gap-1.5 text-[11px]">
+                      <Sparkles className="w-3.5 h-3.5 text-purple-600" />
+                      <span>[추천 프리셋] {recommendedPresets.length}건 (클레임 유형 맞춤 조사 구조)</span>
+                    </span>
+                  </div>
+                  <div className="space-y-1.5">
+                    {recommendedPresets.map((preset) => (
+                      <div
+                        key={preset.id}
+                        className="p-2.5 bg-white rounded-lg border border-purple-200/70"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <strong className="text-slate-900 font-bold truncate">
+                            {preset.name}
+                          </strong>
+                          <span className="text-[10px] text-purple-700 bg-purple-100 px-1.5 py-0.2 rounded font-bold shrink-0">
+                            {preset.subCategory || preset.category || "표준"}
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-slate-600 line-clamp-2 mt-0.5">
+                          {preset.description}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                  <p className="text-[10.5px] text-purple-900/70">
+                    ※ 적용은 [적용] 후 STEP 1의 유형·프리셋 설정에서 동일한 프리셋을 선택하세요.
+                  </p>
+                </div>
+
+                {/* 4-2. 추천 상용구 (현재 조사 상황 맞춤, 최대 6건) */}
+                <div className="bg-emerald-50/60 border border-emerald-200 rounded-xl p-3.5 space-y-2 text-xs">
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-emerald-950 flex items-center gap-1.5 text-[11px]">
+                      <BookOpen className="w-3.5 h-3.5 text-emerald-600" />
+                      <span>[추천 상용구] {(assembledPackage.recommendedPhrases || []).length}건 (상황 맞춤 문장)</span>
+                    </span>
+                  </div>
+                  <div className="space-y-1.5">
+                    {(assembledPackage.recommendedPhrases || []).map((ph) => (
+                      <div
+                        key={ph.id}
+                        className="p-2.5 bg-white rounded-lg border border-emerald-200/70"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <strong className="text-slate-900 font-bold truncate">
+                            {ph.title}
+                          </strong>
+                          <span className="text-[10px] text-emerald-700 bg-emerald-100 px-1.5 py-0.2 rounded font-bold shrink-0">
+                            {ph.fieldKey}
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-slate-600 line-clamp-2 mt-0.5">
+                          {ph.content}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                  <p className="text-[10.5px] text-emerald-900/70">
+                    ※ STEP 2 각 조사 항목의 상용구·상황별 추천에서 동일한 문장이 자동 제시됩니다.
+                  </p>
+                </div>
+
                 {/* 5. 연계된 과거 유사 사례 참고 (구조적 유사성 자동 추천) */}
                 <div className="pt-2">
+                  <div className="flex items-center gap-1.5 px-1 pb-1.5 text-[11px] font-bold text-slate-700">
+                    <History className="w-3.5 h-3.5 text-amber-600" />
+                    <span>
+                      [유사 과거 사례] {(assembledPackage.similarPastClaims || []).length}건 발견
+                      (구조적 유사도 순 — "원인이 같음"이 아님)
+                    </span>
+                  </div>
                   <SimilarClaimRecommendationCard
                     context={{
                       productName: assembledPackage.productMaster.productName,
@@ -825,15 +910,25 @@ export function InvestigationPackageModal({
                     }}
                   />
                 </div>
+
+                {/* 복사 금지 원칙: 과거 결과는 복사하지 않고 조사 구조만 재사용 */}
+                <div className="p-3 bg-slate-900 text-slate-200 rounded-xl text-[11px] leading-relaxed flex items-start gap-2">
+                  <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                  <span>
+                    <strong className="text-white">자동 복사하지 않음:</strong> 과거 조사결과·시험결과·원인·결론·제조번호·소비자정보·사진·첨부자료.
+                    가져오는 것은 조사 항목·순서·방법·관련 공정·프리셋 구조·상용구 연결뿐입니다.
+                    현재 조사 결과는 STEP 2에서 새로 입력하고, 원인은 과거 사례와 무관하게 조사자가 확정합니다.
+                  </span>
+                </div>
               </>
             )}
           </div>
         </div>
 
-        {/* Modal Footer with [조사 시작] Button */}
+        {/* Modal Footer with [적용] / [취소] */}
         <div className="px-6 py-3.5 bg-slate-100 border-t border-slate-200 flex items-center justify-between text-xs shrink-0">
           <div className="text-slate-500 hidden sm:block">
-            <span>※ 시작 시 작성 폼에 제품·제조라인·공정도·조사항목이 즉시 채워집니다.</span>
+            <span>※ [적용] 시 작성 폼에 제품·제조라인·공정도·조사항목 구조가 채워집니다. 조사 결과는 STEP 2에서 새로 입력합니다.</span>
           </div>
 
           <div className="flex items-center gap-2.5 w-full sm:w-auto justify-end">
@@ -842,7 +937,7 @@ export function InvestigationPackageModal({
               onClick={onClose}
               className="px-4 py-2 bg-white border border-slate-300 hover:bg-slate-50 rounded-xl text-slate-700 font-semibold transition-colors cursor-pointer"
             >
-              닫기
+              취소
             </button>
 
             <button
@@ -851,7 +946,7 @@ export function InvestigationPackageModal({
               className="flex-1 sm:flex-none inline-flex items-center justify-center gap-2 px-6 py-2.5 bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-700 hover:from-blue-700 hover:to-indigo-800 text-white rounded-xl font-extrabold shadow-md hover:shadow-lg transition-all active:scale-98 cursor-pointer"
             >
               <Zap className="w-4 h-4 fill-white" />
-              <span className="text-sm">조사 시작</span>
+              <span className="text-sm">적용</span>
             </button>
           </div>
         </div>
